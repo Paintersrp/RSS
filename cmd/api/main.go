@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -56,20 +58,39 @@ func main() {
 		Service: svc,
 	})
 
+	const addr = ":8080"
+
+	serverErrCh := make(chan error, 1)
 	go func() {
-		logx.Info(svc, "listening", map[string]any{"addr": ":8080"})
-		if err := srv.Start(":8080"); err != nil {
-			log.Fatalf("server: %v", err)
-		}
+		logx.Info(svc, "listening", map[string]any{"addr": addr})
+		serverErrCh <- srv.Start(addr)
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+
+	select {
+	case <-stop:
+	case err := <-serverErrCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			logx.Info(svc, "server stopped", map[string]any{"addr": addr})
+			return
+		}
+		logx.Error(svc, "server", err, map[string]any{"addr": addr})
+		os.Exit(1)
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logx.Error(svc, "shutdown", err, nil)
+	}
+
+	if err := <-serverErrCh; err == nil || errors.Is(err, http.ErrServerClosed) {
+		logx.Info(svc, "server stopped", map[string]any{"addr": addr})
+		return
+	} else {
+		logx.Error(svc, "server", err, map[string]any{"addr": addr})
+		os.Exit(1)
 	}
 }
