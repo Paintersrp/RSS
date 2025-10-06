@@ -1,20 +1,20 @@
 -- name: InsertFeed :one
 INSERT INTO feeds (url)
-VALUES ($1)
+VALUES (sqlc.arg(url))
 ON CONFLICT (url) DO NOTHING
 RETURNING id, url, title, etag, last_modified, last_crawled, active;
 
 -- name: ListFeeds :many
 SELECT id, url, title, etag, last_modified, last_crawled, active
 FROM feeds
-WHERE active = $1
+WHERE active = sqlc.arg(active)
 ORDER BY title ASC, url ASC;
 
 -- name: UpdateFeedCrawlState :one
 UPDATE feeds
-SET etag = $2,
-    last_modified = $3,
-    last_crawled = $4,
-    title = COALESCE(NULLIF($5, ''), title)
-WHERE id = $1
+SET etag = sqlc.arg(etag),
+    last_modified = sqlc.arg(last_modified),
+    last_crawled = sqlc.arg(last_crawled),
+    title = COALESCE(NULLIF(sqlc.arg(new_title)::text, ''), title)
+WHERE id = sqlc.arg(id)
 RETURNING id, url, title, etag, last_modified, last_crawled, active;
