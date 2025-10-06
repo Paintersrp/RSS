@@ -1,56 +1,39 @@
-import * as React from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-
-import { listItems, type Item } from '../lib/api'
-import { Button } from '../components/ui/button'
-import { ItemCard } from '../components/ItemCard'
-import { ItemTable } from '../components/ItemTable'
-import { Skeleton } from '../components/ui/skeleton'
+import logo from '../logo.svg'
 
 export const Route = createFileRoute('/')({
-  component: IndexRoute,
+  component: App,
 })
 
-function IndexRoute() {
-  const [view, setView] = React.useState<'table' | 'card'>('table')
-  const { data, isLoading } = useQuery({ queryKey: ['items', view], queryFn: () => listItems({ limit: 50 }) })
-
-  const items = data ?? []
-
+function App() {
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Recent items</h1>
-        <div className="flex gap-2">
-          <Button variant={view === 'table' ? 'default' : 'outline'} onClick={() => setView('table')}>
-            Table
-          </Button>
-          <Button variant={view === 'card' ? 'default' : 'outline'} onClick={() => setView('card')}>
-            Cards
-          </Button>
-        </div>
-      </div>
-      {isLoading ? (
-        <LoadingState />
-      ) : view === 'table' ? (
-        <ItemTable items={items} />
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {items.map((item: Item) => (
-            <ItemCard key={item.id} item={item} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function LoadingState() {
-  return (
-    <div className="space-y-2">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-32 w-full" />
+    <div className="text-center">
+      <header className="min-h-screen flex flex-col items-center justify-center bg-[#282c34] text-white text-[calc(10px+2vmin)]">
+        <img
+          src={logo}
+          className="h-[40vmin] pointer-events-none animate-[spin_20s_linear_infinite]"
+          alt="logo"
+        />
+        <p>
+          Edit <code>src/routes/index.tsx</code> and save to reload.
+        </p>
+        <a
+          className="text-[#61dafb] hover:underline"
+          href="https://reactjs.org"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Learn React
+        </a>
+        <a
+          className="text-[#61dafb] hover:underline"
+          href="https://tanstack.com"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Learn TanStack
+        </a>
+      </header>
     </div>
   )
 }
