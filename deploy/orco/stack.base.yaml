@@ -47,7 +47,7 @@ services:
       - { target: postgres, require: ready }
       - { target: meili,    require: ready }
     health:
-      log: { pattern: "fetcher: ready" }
+      log: { pattern: '"service":"fetcher","msg":"ready"' }
     restartPolicy:
       maxRetries: 10
       backoff: { min: 500ms, max: 20s, factor: 1.8 }
