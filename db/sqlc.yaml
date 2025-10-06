@@ -1,0 +1,15 @@
+version: "2"
+packages:
+  - name: store
+    path: ../internal/store
+    engine: postgresql
+    sql_package: "database/sql"
+    schema:
+      - "migrations"
+    queries:
+      - "queries"
+    emit_empty_slices: true
+    emit_interface: false
+    overrides:
+      - go_type: "time.Time"
+        db_type: "pg_catalog.timestamptz"

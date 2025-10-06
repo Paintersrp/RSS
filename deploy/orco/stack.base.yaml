@@ -1,0 +1,53 @@
+version: 0.1
+stack:
+  name: courier
+  workdir: ./
+
+defaults:
+  restartPolicy: { maxRetries: 5, backoff: { min: 1s, max: 30s, factor: 2.0 } }
+  health: { gracePeriod: 5s, interval: 2s, timeout: 1s, failureThreshold: 3 }
+
+services:
+  postgres:
+    runtime: docker
+    image: postgres:16
+    envFromFile: deploy/orco/secrets/db.env
+    ports: ["5432:5432"]
+    health:
+      tcp: { address: "localhost:5432" }
+
+  meili:
+    runtime: docker
+    image: getmeili/meilisearch:v1.11
+    env:
+      MEILI_ENV: "production"
+      MEILI_NO_ANALYTICS: "true"
+    ports: ["7700:7700"]
+    health:
+      http: { url: "http://localhost:7700/health", expectStatus: [200] }
+
+  api:
+    runtime: process
+    command: ["./bin/api"]
+    envFromFile: deploy/orco/secrets/api.env
+    dependsOn:
+      - { target: postgres, require: ready, timeout: 60s }
+      - { target: meili,    require: ready, timeout: 30s }
+    ports: ["8080:8080"]
+    health:
+      http: { url: "http://localhost:8080/healthz", expectStatus: [200] }
+    replicas: 2
+    update: { strategy: rolling, maxUnavailable: 1, maxSurge: 0 }
+
+  fetcher:
+    runtime: process
+    command: ["./bin/fetcher"]
+    envFromFile: deploy/orco/secrets/api.env
+    dependsOn:
+      - { target: postgres, require: ready }
+      - { target: meili,    require: ready }
+    health:
+      log: { pattern: "fetcher: ready" }
+    restartPolicy:
+      maxRetries: 10
+      backoff: { min: 500ms, max: 20s, factor: 1.8 }
