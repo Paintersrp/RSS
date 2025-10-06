@@ -50,6 +50,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 
 	res := Result{Status: resp.StatusCode}
 	if resp.StatusCode == http.StatusNotModified {
+		res.ETag = etag
+		res.LastModified = lastModified
 		return res, nil
 	}
 
