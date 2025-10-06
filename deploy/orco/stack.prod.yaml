@@ -1,0 +1,5 @@
+services:
+  api:
+    env: { LOG_LEVEL: "info" }
+  fetcher:
+    env: { LOG_LEVEL: "info" }

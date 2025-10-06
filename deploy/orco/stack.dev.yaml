@@ -1,0 +1,5 @@
+services:
+  api:
+    env: { LOG_LEVEL: "debug" }
+  fetcher:
+    env: { LOG_LEVEL: "debug" }
