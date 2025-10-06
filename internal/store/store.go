@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
+
+	"courier/internal/store/sqlc"
 )
 
 var (
@@ -12,11 +16,15 @@ var (
 )
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlc.Queries
 }
 
 func New(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{
+		db:      db,
+		queries: sqlc.New(db),
+	}
 }
 
 type Feed struct {
@@ -30,42 +38,26 @@ type Feed struct {
 }
 
 func (s *Store) InsertFeed(ctx context.Context, url string) (Feed, error) {
-	const q = `INSERT INTO feeds (url) VALUES ($1)
-ON CONFLICT (url) DO NOTHING
-RETURNING id, url, title, etag, last_modified, last_crawled, active`
-	var f Feed
-	err := s.db.QueryRowContext(ctx, q, url).Scan(
-		&f.ID, &f.URL, &f.Title, &f.ETag, &f.LastModified, &f.LastCrawled, &f.Active,
-	)
+	feed, err := s.queries.InsertFeed(ctx, url)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Feed{}, ErrFeedExists
 		}
 		return Feed{}, err
 	}
-	return f, nil
+	return mapFeed(feed), nil
 }
 
 func (s *Store) ListFeeds(ctx context.Context, active bool) ([]Feed, error) {
-	const q = `SELECT id, url, title, etag, last_modified, last_crawled, active
-FROM feeds
-WHERE active = $1
-ORDER BY title ASC, url ASC`
-	rows, err := s.db.QueryContext(ctx, q, active)
+	feeds, err := s.queries.ListFeeds(ctx, active)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var feeds []Feed
-	for rows.Next() {
-		var f Feed
-		if err := rows.Scan(&f.ID, &f.URL, &f.Title, &f.ETag, &f.LastModified, &f.LastCrawled, &f.Active); err != nil {
-			return nil, err
-		}
-		feeds = append(feeds, f)
+	result := make([]Feed, 0, len(feeds))
+	for _, f := range feeds {
+		result = append(result, mapFeed(f))
 	}
-	return feeds, rows.Err()
+	return result, nil
 }
 
 type UpdateFeedCrawlStateParams struct {
@@ -77,21 +69,22 @@ type UpdateFeedCrawlStateParams struct {
 }
 
 func (s *Store) UpdateFeedCrawlState(ctx context.Context, arg UpdateFeedCrawlStateParams) (Feed, error) {
-	const q = `UPDATE feeds
-SET etag = $2,
-    last_modified = $3,
-    last_crawled = $4,
-    title = COALESCE(NULLIF($5, ''), title)
-WHERE id = $1
-RETURNING id, url, title, etag, last_modified, last_crawled, active`
-	var f Feed
-	err := s.db.QueryRowContext(ctx, q, arg.ID, arg.ETag, arg.LastModified, arg.LastCrawled, arg.Title).Scan(
-		&f.ID, &f.URL, &f.Title, &f.ETag, &f.LastModified, &f.LastCrawled, &f.Active,
-	)
+	feedID, err := uuid.Parse(arg.ID)
 	if err != nil {
 		return Feed{}, err
 	}
-	return f, nil
+
+	updated, err := s.queries.UpdateFeedCrawlState(ctx, sqlc.UpdateFeedCrawlStateParams{
+		ID:           feedID,
+		Etag:         arg.ETag,
+		LastModified: arg.LastModified,
+		LastCrawled:  arg.LastCrawled,
+		NewTitle:     arg.Title,
+	})
+	if err != nil {
+		return Feed{}, err
+	}
+	return mapFeed(updated), nil
 }
 
 type Item struct {
@@ -127,59 +120,29 @@ type UpsertItemResult struct {
 }
 
 func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertItemResult, error) {
-	const q = `WITH upsert AS (
-INSERT INTO items (
-    feed_id, guid, url, title, author, content_html, content_text, published_at, retrieved_at, content_hash
-) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10
-) ON CONFLICT (feed_id, COALESCE(guid, url)) DO UPDATE SET
-    url = EXCLUDED.url,
-    title = EXCLUDED.title,
-    author = EXCLUDED.author,
-    content_html = EXCLUDED.content_html,
-    content_text = EXCLUDED.content_text,
-    published_at = EXCLUDED.published_at,
-    retrieved_at = EXCLUDED.retrieved_at,
-    content_hash = EXCLUDED.content_hash
-RETURNING id, feed_id, guid, url, title, author, content_html, content_text, published_at, retrieved_at, content_hash, xmax = 0 AS inserted
-)
-SELECT u.id, u.feed_id, f.title AS feed_title, u.guid, u.url, u.title, u.author, u.content_html, u.content_text, u.published_at, u.retrieved_at, u.inserted
-FROM upsert u
-JOIN feeds f ON f.id = u.feed_id`
-
-	row := s.db.QueryRowContext(ctx, q,
-		arg.FeedID,
-		arg.GUID,
-		arg.URL,
-		arg.Title,
-		arg.Author,
-		arg.ContentHTML,
-		arg.ContentText,
-		arg.PublishedAt,
-		arg.RetrievedAt,
-		arg.ContentHash,
-	)
-
-	var res UpsertItemResult
-	var inserted bool
-	if err := row.Scan(
-		&res.Item.ID,
-		&res.Item.FeedID,
-		&res.Item.FeedTitle,
-		&res.Item.GUID,
-		&res.Item.URL,
-		&res.Item.Title,
-		&res.Item.Author,
-		&res.Item.ContentHTML,
-		&res.Item.ContentText,
-		&res.Item.PublishedAt,
-		&res.Item.RetrievedAt,
-		&inserted,
-	); err != nil {
+	feedID, err := uuid.Parse(arg.FeedID)
+	if err != nil {
 		return UpsertItemResult{}, err
 	}
-	res.Fresh = inserted
-	return res, nil
+
+	row, err := s.queries.UpsertItem(ctx, sqlc.UpsertItemParams{
+		FeedID:      feedID,
+		Guid:        arg.GUID,
+		Url:         arg.URL,
+		Title:       arg.Title,
+		Author:      arg.Author,
+		ContentHtml: arg.ContentHTML,
+		ContentText: arg.ContentText,
+		PublishedAt: arg.PublishedAt,
+		RetrievedAt: nullTimeArg(arg.RetrievedAt),
+		ContentHash: arg.ContentHash,
+	})
+	if err != nil {
+		return UpsertItemResult{}, err
+	}
+
+	item := mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt)
+	return UpsertItemResult{Item: item, Fresh: row.Inserted}, nil
 }
 
 type ListRecentParams struct {
@@ -188,48 +151,74 @@ type ListRecentParams struct {
 }
 
 func (s *Store) ListRecent(ctx context.Context, arg ListRecentParams) ([]Item, error) {
-	const q = `SELECT i.id, i.feed_id, f.title AS feed_title, i.guid, i.url, i.title, i.author, i.content_html, i.content_text, i.published_at, i.retrieved_at
-FROM items i
-JOIN feeds f ON f.id = i.feed_id
-ORDER BY i.published_at DESC NULLS LAST, i.retrieved_at DESC
-LIMIT $1 OFFSET $2`
-	rows, err := s.db.QueryContext(ctx, q, arg.Limit, arg.Offset)
+	rows, err := s.queries.ListRecent(ctx, sqlc.ListRecentParams{
+		Limit:  arg.Limit,
+		Offset: arg.Offset,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var items []Item
-	for rows.Next() {
-		var item Item
-		if err := rows.Scan(&item.ID, &item.FeedID, &item.FeedTitle, &item.GUID, &item.URL, &item.Title, &item.Author, &item.ContentHTML, &item.ContentText, &item.PublishedAt, &item.RetrievedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
+	items := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int32) ([]Item, error) {
-	const q = `SELECT i.id, i.feed_id, f.title AS feed_title, i.guid, i.url, i.title, i.author, i.content_html, i.content_text, i.published_at, i.retrieved_at
-FROM items i
-JOIN feeds f ON f.id = i.feed_id
-WHERE i.feed_id = $1
-ORDER BY i.published_at DESC NULLS LAST, i.retrieved_at DESC
-LIMIT $2 OFFSET $3`
-	rows, err := s.db.QueryContext(ctx, q, feedID, limit, offset)
+	id, err := uuid.Parse(feedID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var items []Item
-	for rows.Next() {
-		var item Item
-		if err := rows.Scan(&item.ID, &item.FeedID, &item.FeedTitle, &item.GUID, &item.URL, &item.Title, &item.Author, &item.ContentHTML, &item.ContentText, &item.PublishedAt, &item.RetrievedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
+	rows, err := s.queries.ListByFeed(ctx, sqlc.ListByFeedParams{
+		FeedID: id,
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return items, rows.Err()
+
+	items := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
+	}
+	return items, nil
+}
+
+func mapFeed(f sqlc.Feed) Feed {
+	return Feed{
+		ID:           f.ID.String(),
+		URL:          f.Url,
+		Title:        f.Title,
+		ETag:         f.Etag,
+		LastModified: f.LastModified,
+		LastCrawled:  f.LastCrawled,
+		Active:       f.Active,
+	}
+}
+
+func mapItem(id uuid.UUID, feedID uuid.UUID, feedTitle string, guid sql.NullString, url string, title string, author sql.NullString, contentHTML string, contentText string, publishedAt sql.NullTime, retrievedAt time.Time) Item {
+	return Item{
+		ID:          id.String(),
+		FeedID:      feedID.String(),
+		FeedTitle:   feedTitle,
+		GUID:        guid,
+		URL:         url,
+		Title:       title,
+		Author:      author,
+		ContentHTML: contentHTML,
+		ContentText: contentText,
+		PublishedAt: publishedAt,
+		RetrievedAt: retrievedAt,
+	}
+}
+
+func nullTimeArg(t sql.NullTime) interface{} {
+	if t.Valid {
+		return t.Time
+	}
+	return nil
 }
