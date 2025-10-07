@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,16 +22,16 @@ func main() {
 	svc := "api"
 	dsn := os.Getenv("COURIER_DSN")
 	if dsn == "" {
-		log.Fatal("COURIER_DSN is required")
+		fatal(svc, "missing required env var", errors.New("COURIER_DSN is required"), map[string]any{"env": "COURIER_DSN"})
 	}
 	meiliURL := os.Getenv("MEILI_URL")
 	if meiliURL == "" {
-		log.Fatal("MEILI_URL is required")
+		fatal(svc, "missing required env var", errors.New("MEILI_URL is required"), map[string]any{"env": "MEILI_URL"})
 	}
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		log.Fatalf("open db: %v", err)
+		fatal(svc, "open db", err, nil)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(10)
@@ -42,12 +41,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("ping db: %v", err)
+		fatal(svc, "ping db", err, nil)
 	}
 
 	searchClient := search.New(meiliURL)
 	if err := searchClient.EnsureIndex(ctx); err != nil {
-		log.Fatalf("ensure index: %v", err)
+		fatal(svc, "ensure index", err, nil)
 	}
 
 	store := store.New(db)
@@ -93,4 +92,9 @@ func main() {
 		logx.Error(svc, "server", err, map[string]any{"addr": addr})
 		os.Exit(1)
 	}
+}
+
+func fatal(service, msg string, err error, extra map[string]any) {
+	logx.Error(service, msg, err, extra)
+	os.Exit(1)
 }
