@@ -3,7 +3,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 # Variables
 BIN := "./bin"
-STACK ?= "deploy/orco/stack.dev.yaml"
+STACK := env_var_or_default('STACK', 'deploy/orco/stack.dev.yaml')
 
 # Default recipe
 default: help
@@ -27,7 +27,7 @@ deps:
     cd web && npm install
 
 sqlc:
-    sqlc generate
+    sqlc generate --file db/sqlc.yaml
 
 goose-up:
     : "${COURIER_DSN:?Set COURIER_DSN env (matches deploy/orco/secrets/api.env)}"
