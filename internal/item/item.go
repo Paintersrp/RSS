@@ -4,8 +4,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	htmlstd "html"
+	"net/url"
+	"path"
 	"strings"
 	"time"
+
+	xhtml "golang.org/x/net/html"
 
 	"github.com/mmcdole/gofeed"
 
@@ -48,16 +53,24 @@ func FromFeedItem(feedID string, fi *gofeed.Item) store.UpsertItemParams {
 	retrieved := sql.NullTime{Valid: true, Time: time.Now().UTC()}
 
 	title := strings.TrimSpace(fi.Title)
-	url := strings.TrimSpace(firstNonEmpty(fi.Link))
+	url := normalizeURL(firstNonEmpty(fi.Link))
 
 	contentHTML := strings.TrimSpace(fi.Content)
 	if contentHTML == "" {
 		contentHTML = strings.TrimSpace(fi.Description)
 	}
 
-	contentText := strings.TrimSpace(stripHTML(contentHTML))
+	contentText := sanitizeHTML(contentHTML)
+	if contentText == "" {
+		contentText = strings.TrimSpace(fi.Description)
+	}
 
-	hash := HashContent(feedID, guid.String, url, title, contentText)
+	guidValue := ""
+	if guid.Valid {
+		guidValue = guid.String
+	}
+
+	hash := HashContent(feedID, guidValue, url, title, contentText)
 
 	return store.UpsertItemParams{
 		FeedID:      feedID,
@@ -82,11 +95,100 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func stripHTML(s string) string {
-	replacer := strings.NewReplacer("<", " ", ">", " ")
-	cleaned := replacer.Replace(s)
-	cleaned = strings.ReplaceAll(cleaned, "\n", " ")
-	cleaned = strings.ReplaceAll(cleaned, "\r", " ")
-	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	return cleaned
+func sanitizeHTML(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ""
+	}
+	node, err := xhtml.Parse(strings.NewReader(trimmed))
+	if err != nil {
+		return collapseWhitespace(trimmed)
+	}
+	var builder strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n.Type == xhtml.ElementNode {
+			switch strings.ToLower(n.Data) {
+			case "script", "style":
+				return
+			}
+		}
+		if n.Type == xhtml.TextNode {
+			text := collapseWhitespace(htmlstd.UnescapeString(n.Data))
+			if text != "" {
+				if builder.Len() > 0 {
+					builder.WriteByte(' ')
+				}
+				builder.WriteString(text)
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return cleanupPunctuation(collapseWhitespace(htmlstd.UnescapeString(builder.String())))
+}
+
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+var punctuationReplacer = strings.NewReplacer(
+	" !", "!",
+	" ?", "?",
+	" ,", ",",
+	" .", ".",
+	" ;", ";",
+	" :", ":",
+)
+
+func cleanupPunctuation(s string) string {
+	return punctuationReplacer.Replace(s)
+}
+
+func normalizeURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" {
+		return raw
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if port != "" {
+		if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+			port = ""
+		}
+	}
+	if port != "" {
+		parsed.Host = host + ":" + port
+	} else {
+		parsed.Host = host
+	}
+	if parsed.Path != "" {
+		cleaned := path.Clean(parsed.Path)
+		if cleaned == "." {
+			cleaned = ""
+		}
+		parsed.Path = cleaned
+	}
+	parsed.Fragment = ""
+
+	query := parsed.Query()
+	for key := range query {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "utm_") || lower == "fbclid" || lower == "gclid" || lower == "mc_cid" || lower == "mc_eid" {
+			query.Del(key)
+		}
+	}
+	if len(query) == 0 {
+		parsed.RawQuery = ""
+	} else {
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String()
 }

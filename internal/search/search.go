@@ -70,11 +70,20 @@ type SearchResponse struct {
 	Hits           []Document `json:"hits"`
 }
 
-func (c *Client) Search(ctx context.Context, query string, limit, offset int) (SearchResponse, error) {
-	res, err := c.client.Index(c.index).SearchWithContext(ctx, query, &meilisearch.SearchRequest{
+type SearchFilters struct {
+	FeedID string
+}
+
+func (c *Client) Search(ctx context.Context, query string, limit, offset int, filters SearchFilters) (SearchResponse, error) {
+	req := &meilisearch.SearchRequest{
 		Offset: int64(offset),
 		Limit:  int64(limit),
-	})
+	}
+	if filters.FeedID != "" {
+		req.Filter = fmt.Sprintf("feed_id = \"%s\"", filters.FeedID)
+	}
+
+	res, err := c.client.Index(c.index).SearchWithContext(ctx, query, req)
 	if err != nil {
 		return SearchResponse{}, err
 	}

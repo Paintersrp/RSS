@@ -85,8 +85,18 @@ func NewServer(cfg Config) *echo.Echo {
 	e.GET("/items", func(c echo.Context) error {
 		limit := parseInt(c.QueryParam("limit"), 50)
 		offset := parseInt(c.QueryParam("offset"), 0)
+		feedID := c.QueryParam("feed_id")
 		ctx := c.Request().Context()
-		items, err := cfg.Store.ListRecent(ctx, store.ListRecentParams{Limit: int32(limit), Offset: int32(offset)})
+
+		var (
+			items []store.Item
+			err   error
+		)
+		if feedID != "" {
+			items, err = cfg.Store.ListByFeed(ctx, feedID, int32(limit), int32(offset))
+		} else {
+			items, err = cfg.Store.ListRecent(ctx, store.ListRecentParams{Limit: int32(limit), Offset: int32(offset)})
+		}
 		if err != nil {
 			return err
 		}
@@ -101,8 +111,9 @@ func NewServer(cfg Config) *echo.Echo {
 		query := c.QueryParam("q")
 		limit := parseInt(c.QueryParam("limit"), 20)
 		offset := parseInt(c.QueryParam("offset"), 0)
+		feedID := c.QueryParam("feed_id")
 		ctx := c.Request().Context()
-		res, err := cfg.Search.Search(ctx, query, limit, offset)
+		res, err := cfg.Search.Search(ctx, query, limit, offset, search.SearchFilters{FeedID: feedID})
 		if err != nil {
 			return err
 		}

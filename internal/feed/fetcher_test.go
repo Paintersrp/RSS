@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFetcherPreservesHeadersOnNotModified(t *testing.T) {
@@ -55,5 +56,20 @@ func TestFetcherPreservesHeadersOnNotModified(t *testing.T) {
 	}
 	if res.LastModified != lastModified {
 		t.Fatalf("expected last modified %q on 304, got %q", lastModified, res.LastModified)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	if d := parseRetryAfter("120"); d != 120*time.Second {
+		t.Fatalf("expected 120s, got %s", d)
+	}
+
+	future := time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+	if d := parseRetryAfter(future); d < 40*time.Second || d > 50*time.Second {
+		t.Fatalf("expected duration around 45s, got %s", d)
+	}
+
+	if d := parseRetryAfter("invalid"); d != 0 {
+		t.Fatalf("expected 0 for invalid header, got %s", d)
 	}
 }

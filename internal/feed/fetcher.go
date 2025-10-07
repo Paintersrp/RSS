@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -16,6 +17,7 @@ type Result struct {
 	Feed         *gofeed.Feed
 	ETag         string
 	LastModified string
+	RetryAfter   time.Duration
 }
 
 type Fetcher struct {
@@ -56,6 +58,11 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if IsRetryable(resp.StatusCode) {
+			res.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			return res, ErrRetryLater
+		}
+
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return res, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
@@ -81,4 +88,20 @@ var ErrRetryLater = errors.New("retry later")
 
 func IsRetryable(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
+}
+
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		diff := time.Until(t)
+		if diff > 0 {
+			return diff
+		}
+	}
+	return 0
 }
