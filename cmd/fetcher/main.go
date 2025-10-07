@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"log"
+	"errors"
 	"net/http"
 	"os"
 	"time"
@@ -21,11 +21,11 @@ func main() {
 	svc := "fetcher"
 	dsn := os.Getenv("COURIER_DSN")
 	if dsn == "" {
-		log.Fatal("COURIER_DSN is required")
+		fatal(svc, "missing required env var", errors.New("COURIER_DSN is required"), map[string]any{"env": "COURIER_DSN"})
 	}
 	meiliURL := os.Getenv("MEILI_URL")
 	if meiliURL == "" {
-		log.Fatal("MEILI_URL is required")
+		fatal(svc, "missing required env var", errors.New("MEILI_URL is required"), map[string]any{"env": "MEILI_URL"})
 	}
 	every := 2 * time.Minute
 	if v := os.Getenv("COURIER_EVERY"); v != "" {
@@ -36,7 +36,7 @@ func main() {
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		log.Fatalf("open db: %v", err)
+		fatal(svc, "open db", err, nil)
 	}
 	defer db.Close()
 
@@ -44,10 +44,10 @@ func main() {
 	searchClient := search.New(meiliURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("ping db: %v", err)
+		fatal(svc, "ping db", err, nil)
 	}
 	if err := searchClient.EnsureIndex(ctx); err != nil {
-		log.Fatalf("ensure index: %v", err)
+		fatal(svc, "ensure index", err, nil)
 	}
 	cancel()
 
@@ -64,6 +64,11 @@ func main() {
 		cancel()
 		<-ticker.C
 	}
+}
+
+func fatal(service, msg string, err error, extra map[string]any) {
+	logx.Error(service, msg, err, extra)
+	os.Exit(1)
 }
 
 func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher) {
