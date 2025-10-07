@@ -19,14 +19,8 @@ import (
 
 func main() {
 	svc := "fetcher"
-	dsn := os.Getenv("COURIER_DSN")
-	if dsn == "" {
-		fatal(svc, "missing required env var", errors.New("COURIER_DSN is required"), map[string]any{"env": "COURIER_DSN"})
-	}
-	meiliURL := os.Getenv("MEILI_URL")
-	if meiliURL == "" {
-		fatal(svc, "missing required env var", errors.New("MEILI_URL is required"), map[string]any{"env": "MEILI_URL"})
-	}
+	dsn := requireEnv(svc, "COURIER_DSN")
+	meiliURL := requireEnv(svc, "MEILI_URL")
 	every := 2 * time.Minute
 	if v := os.Getenv("COURIER_EVERY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -70,6 +64,14 @@ func main() {
 func fatal(service, msg string, err error, extra map[string]any) {
 	logx.Error(service, msg, err, extra)
 	os.Exit(1)
+}
+
+func requireEnv(service, key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		fatal(service, "missing required env var", errors.New(key+" is required"), map[string]any{"env": key})
+	}
+	return value
 }
 
 func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker) {
