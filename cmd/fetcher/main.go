@@ -100,12 +100,14 @@ func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *sea
 
 	res, err := fetcher.Fetch(ctx, f.URL, etag, lastModified)
 	if err != nil {
+		now := time.Now().UTC()
 		if errors.Is(err, feed.ErrRetryLater) {
-			duration := backoffs.Schedule(f.ID, time.Now().UTC(), res.RetryAfter)
+			duration := backoffs.Schedule(f.ID, now, res.RetryAfter)
 			logx.Error(svc, "fetch retry", err, map[string]any{"feed": f.URL, "status": res.Status, "retry_in": duration.String()})
 			return
 		}
-		logx.Error(svc, "fetch", err, map[string]any{"feed": f.URL})
+		duration := backoffs.Schedule(f.ID, now, 0)
+		logx.Error(svc, "fetch", err, map[string]any{"feed": f.URL, "retry_in": duration.String()})
 		return
 	}
 
@@ -162,7 +164,11 @@ func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *sea
 	if err := searchClient.UpsertDocuments(ctx, docs); err != nil {
 		logx.Error(svc, "search upsert", err, map[string]any{"feed": f.URL, "count": len(docs)})
 	} else {
-		logx.Info(svc, "feed processed", map[string]any{"feed": f.URL, "items": len(docs)})
+		batches := 0
+		if size := searchClient.BatchSize(); size > 0 {
+			batches = (len(docs) + size - 1) / size
+		}
+		logx.Info(svc, "feed processed", map[string]any{"feed": f.URL, "items": len(docs), "batches": batches})
 	}
 }
 

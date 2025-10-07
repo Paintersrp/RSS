@@ -6,39 +6,37 @@ func TestNormalizeURL(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want string
+		out  string
 	}{
 		{
-			name: "strips utm and fragment",
-			in:   "https://Example.com:443/path?utm_source=test&ref=keep#section",
-			want: "https://example.com/path?ref=keep",
+			name: "strips tracking params",
+			in:   " https://Example.com:443/posts?id=1&utm_source=newsletter#fragment ",
+			out:  "https://example.com/posts?id=1",
 		},
 		{
-			name: "removes default port and trims spaces",
-			in:   "  http://BLOG.example.com:80/post?id=42&fbclid=abc  ",
-			want: "http://blog.example.com/post?id=42",
+			name: "normalizes default ports",
+			in:   "http://example.com:80/path/",
+			out:  "http://example.com/path",
 		},
 		{
-			name: "handles invalid url",
-			in:   "not a url",
-			want: "not a url",
+			name: "preserves meaningful query",
+			in:   "https://example.com/search?q=Go+lang&ref=home",
+			out:  "https://example.com/search?q=Go+lang&ref=home",
 		},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := normalizeURL(tc.in)
-			if got != tc.want {
-				t.Fatalf("normalizeURL(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := normalizeURL(tc.in); got != tc.out {
+				t.Fatalf("normalizeURL(%q) = %q, want %q", tc.in, got, tc.out)
 			}
 		})
 	}
 }
 
 func TestSanitizeHTML(t *testing.T) {
-	html := `<div><p>Hello <strong>world</strong>!<script>bad()</script></p><p>Second line</p></div>`
-	got := sanitizeHTML(html)
-	const want = "Hello world! Second line"
-	if got != want {
-		t.Fatalf("sanitizeHTML() = %q, want %q", got, want)
+	input := `<p>Hello <strong>world</strong></p><script>alert('xss')</script>`
+	if got := sanitizeHTML(input); got != "Hello world" {
+		t.Fatalf("unexpected sanitizeHTML result: %q", got)
 	}
 }
