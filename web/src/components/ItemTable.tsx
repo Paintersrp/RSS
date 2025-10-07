@@ -1,10 +1,14 @@
 import {
   flexRender,
   getCoreRowModel,
+  getSortedRowModel,
   useReactTable,
+  type Column,
   type ColumnDef,
+  type SortingState,
 } from '@tanstack/react-table'
-import { ExternalLink } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ExternalLink } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 import type { Item } from '@/lib/api'
 
@@ -24,13 +28,14 @@ function formatDate(value?: string | null) {
 
 const columns: ColumnDef<Item>[] = [
   {
-    header: 'Feed',
+    header: ({ column }) => <SortableHeader column={column} label="Feed" />,
     accessorKey: 'feed_title',
     cell: ({ row }) => (
       <span className="font-medium text-sm text-muted-foreground">{
         row.original.feed_title
       }</span>
     ),
+    enableSorting: true,
   },
   {
     header: 'Title',
@@ -57,13 +62,24 @@ const columns: ColumnDef<Item>[] = [
     ),
   },
   {
-    header: 'Published',
+    header: ({ column }) => <SortableHeader column={column} label="Published" />,
     accessorKey: 'published_at',
     cell: ({ row }) => (
       <span className="text-sm text-muted-foreground">
         {formatDate(row.original.published_at ?? row.original.retrieved_at)}
       </span>
     ),
+    enableSorting: true,
+    sortingFn: (rowA, rowB) => {
+      const valueA = rowA.original.published_at ?? rowA.original.retrieved_at
+      const valueB = rowB.original.published_at ?? rowB.original.retrieved_at
+      if (!valueA && !valueB) return 0
+      if (!valueA) return -1
+      if (!valueB) return 1
+      const timeA = Date.parse(valueA)
+      const timeB = Date.parse(valueB)
+      return timeA - timeB
+    },
   },
 ]
 
@@ -72,10 +88,17 @@ interface ItemTableProps {
 }
 
 export default function ItemTable({ items }: ItemTableProps) {
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: 'published_at', desc: true },
+  ])
   const table = useReactTable({
     data: items,
     columns,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    state: { sorting },
+    onSortingChange: setSorting,
+    manualSorting: false,
   })
 
   return (
@@ -122,5 +145,37 @@ export default function ItemTable({ items }: ItemTableProps) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+interface SortableHeaderProps {
+  column: Column<Item, unknown>
+  label: string
+}
+
+function SortableHeader({ column, label }: SortableHeaderProps) {
+  const sorted = column.getIsSorted()
+  const Icon = useMemo(() => {
+    if (sorted === 'asc') return ArrowUp
+    if (sorted === 'desc') return ArrowDown
+    return ArrowUpDown
+  }, [sorted])
+
+  return (
+    <button
+      type="button"
+      onClick={column.getToggleSortingHandler()}
+      className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+    >
+      {label}
+      <Icon className="size-3" aria-hidden />
+      <span className="sr-only">
+        {sorted === 'asc'
+          ? 'ascending'
+          : sorted === 'desc'
+            ? 'descending'
+            : 'no sort'}
+      </span>
+    </button>
   )
 }

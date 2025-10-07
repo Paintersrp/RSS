@@ -1,27 +1,41 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
 
 import ItemCard from '@/components/ItemCard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { searchItems } from '@/lib/api'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { listFeeds, searchItems } from '@/lib/api'
 import { queryKeys } from '@/lib/query'
 
 const PAGE_SIZE = 20
+const SAVED_SEARCHES = [
+  { label: 'Rust', query: 'rust' },
+  { label: 'Go', query: 'golang' },
+  { label: 'AI', query: 'artificial intelligence' },
+  { label: 'Security', query: 'security' },
+  { label: 'Databases', query: 'postgres' },
+]
 
 export const Route = createFileRoute('/search')({
   validateSearch: (search) => ({
     q: typeof search.q === 'string' ? search.q : '',
     page: typeof search.page === 'number' && search.page > 0 ? search.page : 1,
+    feed: typeof search.feed === 'string' ? search.feed : '',
   }),
   component: SearchRoute,
 })
 
 function SearchRoute() {
-  const { q, page } = Route.useSearch()
+  const { q, page, feed } = Route.useSearch()
   const navigate = Route.useNavigate()
   const [term, setTerm] = useState(q)
   const offset = useMemo(() => (Math.max(1, page) - 1) * PAGE_SIZE, [page])
@@ -30,30 +44,40 @@ function SearchRoute() {
     setTerm(q)
   }, [q])
 
+  const feedsQuery = useQuery({
+    queryKey: queryKeys.feeds(),
+    queryFn: () => listFeeds(),
+    staleTime: 5 * 60 * 1000,
+  })
+
   const query = useQuery({
-    queryKey: queryKeys.search({ query: q, limit: PAGE_SIZE, offset }),
-    queryFn: () => searchItems({ query: q, limit: PAGE_SIZE, offset }),
+    queryKey: queryKeys.search({
+      query: q,
+      limit: PAGE_SIZE,
+      offset,
+      feed_id: feed || undefined,
+    }),
+    queryFn: () => searchItems({
+      query: q,
+      limit: PAGE_SIZE,
+      offset,
+      feed_id: feed || undefined,
+    }),
     enabled: q.trim().length > 0,
     keepPreviousData: true,
   })
-
-  useEffect(() => {
-    if (query.isError) {
-      toast.error('Unable to run search. Please try again.')
-    }
-  }, [query.isError])
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const next = term.trim()
     void navigate({
-      search: { q: next, page: 1 },
+      search: { q: next, page: 1, feed },
     })
   }
 
   const goToPage = (nextPage: number) => {
     void navigate({
-      search: { q, page: nextPage },
+      search: { q, page: nextPage, feed },
     })
   }
 
@@ -62,6 +86,9 @@ function SearchRoute() {
   const hasQuery = q.trim().length > 0
   const hasNext = offset + results.length < total
   const hasPrev = page > 1
+  const feeds = feedsQuery.data ?? []
+  const activeFeed = feed ? feeds.find((f) => f.id === feed) : undefined
+  const feedSelection = feed || 'all'
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-10 px-4 py-10">
@@ -89,7 +116,7 @@ function SearchRoute() {
                 variant="ghost"
                 onClick={() => {
                   setTerm('')
-                  void navigate({ search: { q: '', page: 1 } })
+                  void navigate({ search: { q: '', page: 1, feed: '' } })
                 }}
               >
                 Clear
@@ -97,6 +124,50 @@ function SearchRoute() {
             )}
           </div>
         </form>
+
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span>Saved searches:</span>
+            <div className="flex flex-wrap gap-2">
+              {SAVED_SEARCHES.map((item) => (
+                <Button
+                  key={item.query}
+                  size="sm"
+                  variant={q.toLowerCase() === item.query.toLowerCase() ? 'default' : 'outline'}
+                  onClick={() => {
+                    void navigate({
+                      search: { q: item.query, page: 1, feed },
+                    })
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <Select
+            value={feedSelection}
+            onValueChange={(value) => {
+              const nextFeed = value === 'all' ? '' : value
+              void navigate({
+                search: { q, page: 1, feed: nextFeed },
+              })
+            }}
+            disabled={feedsQuery.isLoading}
+          >
+            <SelectTrigger className="w-[220px]">
+              <SelectValue placeholder="All feeds" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All feeds</SelectItem>
+              {feeds.map((f) => (
+                <SelectItem key={f.id} value={f.id}>
+                  {f.title || f.url}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         {!hasQuery ? (
           <EmptyState />
@@ -107,6 +178,11 @@ function SearchRoute() {
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <p className="text-sm text-muted-foreground">
                 Showing {results.length} of {total} results for <span className="font-medium text-foreground">“{q}”</span>
+                {activeFeed && (
+                  <>
+                    {' '}from <span className="font-medium text-foreground">{activeFeed.title}</span>
+                  </>
+                )}
               </p>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>Page {page}</span>

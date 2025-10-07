@@ -36,6 +36,13 @@ export interface SearchResponse {
   hits: SearchDocument[]
 }
 
+export interface Feed {
+  id: string
+  url: string
+  title: string
+  last_crawled?: string | null
+}
+
 const baseUrl = (
   (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ??
   'http://localhost:8080'
@@ -52,11 +59,13 @@ export const api = ky.create({
 export interface ListItemsParams {
   limit?: number
   offset?: number
+  feed_id?: string
 }
 
 export async function listRecentItems({
   limit = 50,
   offset = 0,
+  feed_id,
 }: ListItemsParams = {}): Promise<Item[]> {
   const searchParams = new URLSearchParams()
   if (limit) {
@@ -65,6 +74,9 @@ export async function listRecentItems({
   if (offset) {
     searchParams.set('offset', String(offset))
   }
+  if (feed_id) {
+    searchParams.set('feed_id', feed_id)
+  }
   return api.get('items', { searchParams }).json<Item[]>()
 }
 
@@ -72,12 +84,14 @@ export interface SearchItemsParams {
   query: string
   limit?: number
   offset?: number
+  feed_id?: string
 }
 
 export async function searchItems({
   query,
   limit = 20,
   offset = 0,
+  feed_id,
 }: SearchItemsParams): Promise<SearchResponse> {
   const searchParams = new URLSearchParams()
   searchParams.set('q', query)
@@ -87,9 +101,16 @@ export async function searchItems({
   if (offset) {
     searchParams.set('offset', String(offset))
   }
+  if (feed_id) {
+    searchParams.set('feed_id', feed_id)
+  }
   return api.get('search', { searchParams }).json<SearchResponse>()
 }
 
 export async function getHealth(): Promise<HealthResponse> {
   return api.get('healthz').json<HealthResponse>()
+}
+
+export async function listFeeds(): Promise<Feed[]> {
+  return api.get('feeds').json<Feed[]>()
 }

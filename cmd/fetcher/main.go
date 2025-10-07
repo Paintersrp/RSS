@@ -52,6 +52,7 @@ func main() {
 	cancel()
 
 	fetcher := feed.NewFetcher()
+	backoffs := newBackoffTracker()
 
 	logx.Info(svc, "ready", map[string]any{"every": every.String()})
 
@@ -60,7 +61,7 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), every)
-		run(ctx, svc, repo, searchClient, fetcher)
+		run(ctx, svc, repo, searchClient, fetcher, backoffs)
 		cancel()
 		<-ticker.C
 	}
@@ -71,18 +72,23 @@ func fatal(service, msg string, err error, extra map[string]any) {
 	os.Exit(1)
 }
 
-func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher) {
+func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker) {
 	feeds, err := repo.ListFeeds(ctx, true)
 	if err != nil {
 		logx.Error(svc, "list feeds", err, nil)
 		return
 	}
+	now := time.Now().UTC()
 	for _, f := range feeds {
-		crawl(ctx, svc, repo, searchClient, fetcher, f)
+		if wait := backoffs.Remaining(f.ID, now); wait > 0 {
+			logx.Info(svc, "backoff active", map[string]any{"feed": f.URL, "retry_in": wait.String()})
+			continue
+		}
+		crawl(ctx, svc, repo, searchClient, fetcher, backoffs, f)
 	}
 }
 
-func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, f store.Feed) {
+func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker, f store.Feed) {
 	etag := ""
 	if f.ETag.Valid {
 		etag = f.ETag.String
@@ -94,9 +100,16 @@ func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *sea
 
 	res, err := fetcher.Fetch(ctx, f.URL, etag, lastModified)
 	if err != nil {
+		if errors.Is(err, feed.ErrRetryLater) {
+			duration := backoffs.Schedule(f.ID, time.Now().UTC(), res.RetryAfter)
+			logx.Error(svc, "fetch retry", err, map[string]any{"feed": f.URL, "status": res.Status, "retry_in": duration.String()})
+			return
+		}
 		logx.Error(svc, "fetch", err, map[string]any{"feed": f.URL})
 		return
 	}
+
+	backoffs.Reset(f.ID)
 
 	now := time.Now().UTC()
 	title := f.Title
@@ -158,6 +171,62 @@ func sqlNullString(v string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{Valid: true, String: v}
+}
+
+type backoffTracker struct {
+	min    time.Duration
+	max    time.Duration
+	factor float64
+	items  map[string]backoffEntry
+}
+
+type backoffEntry struct {
+	until    time.Time
+	duration time.Duration
+}
+
+func newBackoffTracker() *backoffTracker {
+	return &backoffTracker{
+		min:    30 * time.Second,
+		max:    10 * time.Minute,
+		factor: 2.0,
+		items:  make(map[string]backoffEntry),
+	}
+}
+
+func (b *backoffTracker) Remaining(id string, now time.Time) time.Duration {
+	entry, ok := b.items[id]
+	if !ok {
+		return 0
+	}
+	if now.After(entry.until) {
+		delete(b.items, id)
+		return 0
+	}
+	return entry.until.Sub(now)
+}
+
+func (b *backoffTracker) Schedule(id string, now time.Time, suggested time.Duration) time.Duration {
+	entry := b.items[id]
+	duration := suggested
+	if duration <= 0 {
+		if entry.duration == 0 {
+			duration = b.min
+		} else {
+			duration = time.Duration(float64(entry.duration) * b.factor)
+		}
+	}
+	if duration > b.max {
+		duration = b.max
+	}
+	entry.duration = duration
+	entry.until = now.Add(duration)
+	b.items[id] = entry
+	return duration
+}
+
+func (b *backoffTracker) Reset(id string) {
+	delete(b.items, id)
 }
 
 func sqlNullTime(t time.Time) sql.NullTime {
