@@ -20,17 +20,39 @@ type Document struct {
 }
 
 type Client struct {
-	svc    string
-	client meilisearch.ServiceManager
-	index  string
+	svc       string
+	client    meilisearch.ServiceManager
+	index     string
+	batchSize int
 }
 
-func New(url string) *Client {
-	return &Client{
-		svc:    "search",
-		client: meilisearch.New(url),
-		index:  "items",
+// Option configures the search client.
+type Option func(*Client)
+
+const defaultBatchSize = 100
+
+// WithBatchSize overrides the number of documents sent per Meilisearch
+// upsert call. Values <= 0 fallback to the default chunk size.
+func WithBatchSize(size int) Option {
+	return func(c *Client) {
+		c.batchSize = size
 	}
+}
+
+func New(url string, opts ...Option) *Client {
+	client := &Client{
+		svc:       "search",
+		client:    meilisearch.New(url),
+		index:     "items",
+		batchSize: defaultBatchSize,
+	}
+	for _, opt := range opts {
+		opt(client)
+	}
+	if client.batchSize <= 0 {
+		client.batchSize = defaultBatchSize
+	}
+	return client
 }
 
 func (c *Client) EnsureIndex(ctx context.Context) error {
@@ -126,10 +148,32 @@ func (c *Client) UpsertDocuments(ctx context.Context, docs []Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	_, err := c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
-	return err
+
+	batchSize := c.batchSize
+	if batchSize <= 0 {
+		batchSize = defaultBatchSize
+	}
+
+	index := c.client.Index(c.index)
+	for start := 0; start < len(docs); start += batchSize {
+		end := start + batchSize
+		if end > len(docs) {
+			end = len(docs)
+		}
+		if _, err := index.UpdateDocumentsWithContext(ctx, docs[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) IndexName() string {
 	return c.index
+}
+
+func (c *Client) BatchSize() int {
+	if c.batchSize <= 0 {
+		return defaultBatchSize
+	}
+	return c.batchSize
 }

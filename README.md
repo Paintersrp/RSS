@@ -48,10 +48,16 @@ just goose-up  # apply migrations (requires COURIER_DSN)
 - **Resetting data** – stop the stack and remove the Docker volumes created by Postgres/Meilisearch.
 - **Meilisearch health** – check http://localhost:7700/health if `/healthz` reports search unavailable.
 
+## v0.2 highlights
+
+- **Smarter crawling.** The fetcher now applies per-feed backoff for 429/503 responses and transient failures, respecting `Retry-After` headers and logging the next retry window.
+- **Safer normalization.** HTML is sanitized into plain text for hashing and search, and URL canonicalization trims tracking parameters and default ports. New tests cover these code paths.
+- **Meilisearch batching.** Documents are upserted in predictable batches to keep search writes snappy even as feeds grow noisier.
+- **Richer web experience.** Saved search chips, feed filters, sortable tables, loading skeletons, and toast errors keep the UI responsive while new content streams in.
+
 ## Roadmap
 
-- **v0.2**: tighter crawl backoff, improved content normalization, richer web UX (sorting, saved searches, skeletons).
 - **v0.3**: observability upgrades (`/metrics`, richer ingest logs), resilience tweaks, dependency graph automation.
 - **v0.4**: dual-index canary workflow with configurable Meili index selection and client surface to inspect served index.
 
-Courier v0.1 focuses on delivering a complete baseline: migrations, typed data access, Meili index bootstrap, API surface, fetcher worker, and a React dashboard for browsing and searching items.
+Courier v0.1 focused on delivering a complete baseline: migrations, typed data access, Meili index bootstrap, API surface, fetcher worker, and a React dashboard for browsing and searching items.
