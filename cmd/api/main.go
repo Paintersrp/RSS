@@ -20,14 +20,8 @@ import (
 
 func main() {
 	svc := "api"
-	dsn := os.Getenv("COURIER_DSN")
-	if dsn == "" {
-		fatal(svc, "missing required env var", errors.New("COURIER_DSN is required"), map[string]any{"env": "COURIER_DSN"})
-	}
-	meiliURL := os.Getenv("MEILI_URL")
-	if meiliURL == "" {
-		fatal(svc, "missing required env var", errors.New("MEILI_URL is required"), map[string]any{"env": "MEILI_URL"})
-	}
+	dsn := requireEnv(svc, "COURIER_DSN")
+	meiliURL := requireEnv(svc, "MEILI_URL")
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -75,8 +69,7 @@ func main() {
 			logx.Info(svc, "server stopped", map[string]any{"addr": addr})
 			return
 		}
-		logx.Error(svc, "server", err, map[string]any{"addr": addr})
-		os.Exit(1)
+		fatal(svc, "server", err, map[string]any{"addr": addr})
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -89,12 +82,19 @@ func main() {
 		logx.Info(svc, "server stopped", map[string]any{"addr": addr})
 		return
 	} else {
-		logx.Error(svc, "server", err, map[string]any{"addr": addr})
-		os.Exit(1)
+		fatal(svc, "server", err, map[string]any{"addr": addr})
 	}
 }
 
 func fatal(service, msg string, err error, extra map[string]any) {
 	logx.Error(service, msg, err, extra)
 	os.Exit(1)
+}
+
+func requireEnv(service, key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		fatal(service, "missing required env var", errors.New(key+" is required"), map[string]any{"env": key})
+	}
+	return value
 }
