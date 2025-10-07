@@ -75,22 +75,57 @@ func requireEnv(service, key string) string {
 }
 
 func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker) {
+	logx.Info(svc, "crawl tick", nil)
+
 	feeds, err := repo.ListFeeds(ctx, true)
 	if err != nil {
 		logx.Error(svc, "list feeds", err, nil)
 		return
 	}
-	now := time.Now().UTC()
+
 	for _, f := range feeds {
-		if wait := backoffs.Remaining(f.ID, now); wait > 0 {
-			logx.Info(svc, "backoff active", map[string]any{"feed": f.URL, "retry_in": wait.String()})
-			continue
-		}
-		crawl(ctx, svc, repo, searchClient, fetcher, backoffs, f)
+		FetchFeed(ctx, svc, repo, searchClient, fetcher, backoffs, f)
 	}
 }
 
-func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker, f store.Feed) {
+type feedStore interface {
+	UpdateFeedCrawlState(context.Context, store.UpdateFeedCrawlStateParams) (store.Feed, error)
+	UpsertItem(context.Context, store.UpsertItemParams) (store.UpsertItemResult, error)
+}
+
+type feedFetcher interface {
+	Fetch(ctx context.Context, url, etag, lastModified string) (feed.Result, error)
+}
+
+type documentIndexer interface {
+	UpsertDocuments(ctx context.Context, docs []search.Document) error
+}
+
+type FetchFeedResult struct {
+	FeedID  string
+	FeedURL string
+	Status  int
+	Items   int
+	Mutated bool
+	Err     error
+	RetryIn time.Duration
+	Skipped bool
+}
+
+var ErrBackoffActive = errors.New("backoff active")
+
+func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) FetchFeedResult {
+	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
+
+	now := time.Now().UTC()
+	if wait := backoffs.Remaining(f.ID, now); wait > 0 {
+		result.Err = ErrBackoffActive
+		result.RetryIn = wait
+		result.Skipped = true
+		logx.Info(svc, "backoff active", map[string]any{"feed": f.URL, "retry_in": wait.String()})
+		return result
+	}
+
 	etag := ""
 	if f.ETag.Valid {
 		etag = f.ETag.String
@@ -101,71 +136,84 @@ func crawl(ctx context.Context, svc string, repo *store.Store, searchClient *sea
 	}
 
 	res, err := fetcher.Fetch(ctx, f.URL, etag, lastModified)
+	result.Status = res.Status
 	if err != nil {
+		result.Err = err
 		if errors.Is(err, feed.ErrRetryLater) {
-			duration := backoffs.Schedule(f.ID, time.Now().UTC(), res.RetryAfter)
+			duration := backoffs.Schedule(f.ID, now, res.RetryAfter)
+			result.RetryIn = duration
 			logx.Error(svc, "fetch retry", err, map[string]any{"feed": f.URL, "status": res.Status, "retry_in": duration.String()})
-			return
+			return result
 		}
 		logx.Error(svc, "fetch", err, map[string]any{"feed": f.URL})
-		return
+		return result
 	}
 
 	backoffs.Reset(f.ID)
 
-	now := time.Now().UTC()
+	if res.Status == http.StatusNotModified || res.Feed == nil {
+		result.Skipped = true
+		logx.Info(svc, "feed not modified", map[string]any{"feed": f.URL})
+		return result
+	}
+
+	updateTime := time.Now().UTC()
 	title := f.Title
 	if res.Feed != nil && res.Feed.Title != "" {
 		title = res.Feed.Title
 	}
 
-	_, err = repo.UpdateFeedCrawlState(ctx, store.UpdateFeedCrawlStateParams{
+	if _, err := repo.UpdateFeedCrawlState(ctx, store.UpdateFeedCrawlStateParams{
 		ID:           f.ID,
 		ETag:         sqlNullString(res.ETag),
 		LastModified: sqlNullString(res.LastModified),
-		LastCrawled:  sqlNullTime(now),
+		LastCrawled:  sqlNullTime(updateTime),
 		Title:        title,
-	})
-	if err != nil {
+	}); err != nil {
 		logx.Error(svc, "update feed", err, map[string]any{"feed": f.URL})
+	} else {
+		result.Mutated = true
 	}
 
-	if res.Status == http.StatusNotModified || res.Feed == nil {
-		logx.Info(svc, "feed not modified", map[string]any{"feed": f.URL})
-		return
+	if res.Feed == nil {
+		return result
 	}
 
 	var docs []search.Document
 	for _, entry := range res.Feed.Items {
 		params := item.FromFeedItem(f.ID, entry)
-		result, err := repo.UpsertItem(ctx, params)
+		output, err := repo.UpsertItem(ctx, params)
 		if err != nil {
 			logx.Error(svc, "upsert item", err, map[string]any{"feed": f.URL})
 			continue
 		}
 		doc := search.Document{
-			ID:          result.Item.ID,
-			FeedID:      result.Item.FeedID,
-			FeedTitle:   result.Item.FeedTitle,
-			Title:       result.Item.Title,
-			ContentText: result.Item.ContentText,
-			URL:         result.Item.URL,
+			ID:          output.Item.ID,
+			FeedID:      output.Item.FeedID,
+			FeedTitle:   output.Item.FeedTitle,
+			Title:       output.Item.Title,
+			ContentText: output.Item.ContentText,
+			URL:         output.Item.URL,
 		}
-		if result.Item.PublishedAt.Valid {
-			t := result.Item.PublishedAt.Time.UTC()
+		if output.Item.PublishedAt.Valid {
+			t := output.Item.PublishedAt.Time.UTC()
 			doc.PublishedAt = &t
 		}
 		docs = append(docs, doc)
-		if result.Fresh {
-			logx.Info(svc, "item indexed", map[string]any{"id": result.Item.ID, "feed": f.URL})
+		if output.Fresh {
+			logx.Info(svc, "item indexed", map[string]any{"id": output.Item.ID, "feed": f.URL})
 		}
 	}
 
+	result.Items = len(docs)
 	if err := searchClient.UpsertDocuments(ctx, docs); err != nil {
+		result.Err = err
 		logx.Error(svc, "search upsert", err, map[string]any{"feed": f.URL, "count": len(docs)})
-	} else {
-		logx.Info(svc, "feed processed", map[string]any{"feed": f.URL, "items": len(docs)})
+		return result
 	}
+
+	logx.Info(svc, "feed processed", map[string]any{"feed": f.URL, "items": len(docs)})
+	return result
 }
 
 func sqlNullString(v string) sql.NullString {

@@ -76,7 +76,7 @@ const updateFeedCrawlState = `-- name: UpdateFeedCrawlState :one
 UPDATE feeds
 SET etag = $1,
     last_modified = $2,
-    last_crawled = $3,
+    last_crawled = COALESCE($3, last_crawled),
     title = COALESCE(NULLIF($4::text, ''), title)
 WHERE id = $5
 RETURNING id, url, title, etag, last_modified, last_crawled, active
