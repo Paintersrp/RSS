@@ -44,7 +44,7 @@ function RecentItemsRoute() {
     queryFn: () => listRecentItems({ limit: LIMIT, feed_id: feed || undefined }),
   })
 
-  const items = itemsQuery.data ?? []
+  const items = itemsQuery.data?.items ?? []
   const feeds = feedsQuery.data ?? []
   const activeFeed = feed ? feeds.find((f) => f.id === feed) : undefined
   const feedSelection = feed || 'all'
@@ -115,7 +115,7 @@ function RecentItemsRoute() {
         ) : (
           <>
             {showTable ? (
-              <ItemTable items={items} />
+              <ItemTable feedId={feed || undefined} />
             ) : (
               <div className="grid gap-6 md:grid-cols-2">
                 {items.map((item) => (

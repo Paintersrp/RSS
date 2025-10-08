@@ -59,14 +59,21 @@ export const api = ky.create({
 export interface ListItemsParams {
   limit?: number
   offset?: number
-  feed_id?: string
+  sort?: string
+  feed_id?: string | string[]
+}
+
+export interface ListRecentItemsResponse {
+  items: Item[]
+  total: number
 }
 
 export async function listRecentItems({
   limit = 50,
   offset = 0,
+  sort,
   feed_id,
-}: ListItemsParams = {}): Promise<Item[]> {
+}: ListItemsParams = {}): Promise<ListRecentItemsResponse> {
   const searchParams = new URLSearchParams()
   if (limit) {
     searchParams.set('limit', String(limit))
@@ -74,10 +81,36 @@ export async function listRecentItems({
   if (offset) {
     searchParams.set('offset', String(offset))
   }
-  if (feed_id) {
+  if (sort) {
+    searchParams.set('sort', sort)
+  }
+  if (Array.isArray(feed_id)) {
+    for (const id of feed_id) {
+      if (id) {
+        searchParams.append('feed_id', id)
+      }
+    }
+  } else if (feed_id) {
     searchParams.set('feed_id', feed_id)
   }
-  return api.get('items', { searchParams }).json<Item[]>()
+
+  const response = await api.get('items', { searchParams })
+  const payload = await response.json<
+    Item[] | { items?: Item[]; total?: number }
+  >()
+
+  const headerTotal = response.headers.get('x-total-count')
+  const items = Array.isArray(payload) ? payload : payload.items ?? []
+  const totalFromPayload = !Array.isArray(payload) && payload.total
+
+  const total =
+    typeof totalFromPayload === 'number'
+      ? totalFromPayload
+      : headerTotal
+        ? Number.parseInt(headerTotal, 10)
+        : items.length
+
+  return { items, total }
 }
 
 export interface SearchItemsParams {
