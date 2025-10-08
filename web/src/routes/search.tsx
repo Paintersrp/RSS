@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import type { DateRange } from 'react-day-picker'
 
 import ItemCard from '@/components/ItemCard'
@@ -138,6 +139,18 @@ function SearchRoute() {
     queryKey: queryKeys.feeds(),
     queryFn: () => listFeeds(),
     staleTime: 5 * 60 * 1000,
+    onError: (error) => {
+      console.error('Failed to load feeds', error)
+      const message =
+        error instanceof Error ? error.message : 'Please try again in a few moments.'
+      toast.error('Unable to load feeds', {
+        id: 'feeds-error',
+        description: `${message} Retry shortly or contact support if the issue persists.`,
+      })
+    },
+    onSuccess: () => {
+      toast.dismiss('feeds-error')
+    },
   })
 
   const startDateISO = startDate ?? undefined
@@ -162,6 +175,18 @@ function SearchRoute() {
     }),
     enabled: q.trim().length > 0,
     keepPreviousData: true,
+    onError: (error) => {
+      console.error('Search request failed', error)
+      const message =
+        error instanceof Error ? error.message : 'Please try again in a few moments.'
+      toast.error('Unable to complete search', {
+        id: 'search-error',
+        description: `${message} Retry your search or adjust the filters before trying again.`,
+      })
+    },
+    onSuccess: () => {
+      toast.dismiss('search-error')
+    },
   })
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
