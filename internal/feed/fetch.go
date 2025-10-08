@@ -51,9 +51,20 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	defer resp.Body.Close()
 
 	res := Result{Status: resp.StatusCode}
+	currentETag := resp.Header.Get("ETag")
+	currentLastModified := resp.Header.Get("Last-Modified")
+
 	if resp.StatusCode == http.StatusNotModified {
-		res.ETag = etag
-		res.LastModified = lastModified
+		if currentETag != "" {
+			res.ETag = currentETag
+		} else {
+			res.ETag = etag
+		}
+		if currentLastModified != "" {
+			res.LastModified = currentLastModified
+		} else {
+			res.LastModified = lastModified
+		}
 		return res, nil
 	}
 
@@ -73,8 +84,8 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	}
 
 	res.Feed = feed
-	res.ETag = resp.Header.Get("ETag")
-	res.LastModified = resp.Header.Get("Last-Modified")
+	res.ETag = currentETag
+	res.LastModified = currentLastModified
 	if res.ETag == "" {
 		res.ETag = etag
 	}

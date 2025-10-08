@@ -104,7 +104,7 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result := FetchFeed(ctx, "fetcher", repo, searchClient, fetcher, backoffs, feedRecord)
+	result := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -127,7 +127,7 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	feedRecord.ETag = sql.NullString{Valid: true, String: etag}
 	feedRecord.LastModified = sql.NullString{Valid: true, String: lastModified}
 
-	second := FetchFeed(ctx, "fetcher", repo, searchClient, fetcher, backoffs, feedRecord)
+	second := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
 	if second.Status != http.StatusNotModified {
 		t.Fatalf("expected status 304, got %d", second.Status)
 	}

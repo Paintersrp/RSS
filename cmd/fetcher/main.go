@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -84,7 +85,38 @@ func run(ctx context.Context, svc string, repo *store.Store, searchClient *searc
 	}
 
 	for _, f := range feeds {
-		FetchFeed(ctx, svc, repo, searchClient, fetcher, backoffs, f)
+		result := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
+
+		extra := map[string]any{
+			"feed":    f.URL,
+			"feed_id": f.ID,
+		}
+		if result.Status != 0 {
+			extra["status"] = result.Status
+		}
+		if result.Items > 0 {
+			extra["items"] = result.Items
+		}
+		if result.Mutated {
+			extra["mutated"] = true
+		}
+		if result.Reason != "" {
+			extra["reason"] = result.Reason
+		}
+		if result.RetryIn > 0 {
+			extra["retry_in"] = result.RetryIn.String()
+		}
+
+		switch {
+		case result.Err != nil && errors.Is(result.Err, ErrBackoffActive):
+			logx.Info(svc, "feed skipped", extra)
+		case result.Err != nil:
+			logx.Error(svc, "feed error", result.Err, extra)
+		case result.Skipped:
+			logx.Info(svc, "feed skipped", extra)
+		default:
+			logx.Info(svc, "feed processed", extra)
+		}
 	}
 }
 
@@ -110,11 +142,12 @@ type FetchFeedResult struct {
 	Err     error
 	RetryIn time.Duration
 	Skipped bool
+	Reason  string
 }
 
 var ErrBackoffActive = errors.New("backoff active")
 
-func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) FetchFeedResult {
+func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) FetchFeedResult {
 	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 
 	now := time.Now().UTC()
@@ -122,7 +155,7 @@ func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient doc
 		result.Err = ErrBackoffActive
 		result.RetryIn = wait
 		result.Skipped = true
-		logx.Info(svc, "backoff active", map[string]any{"feed": f.URL, "retry_in": wait.String()})
+		result.Reason = "backoff active"
 		return result
 	}
 
@@ -142,18 +175,24 @@ func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient doc
 		if errors.Is(err, feed.ErrRetryLater) {
 			duration := backoffs.Schedule(f.ID, now, res.RetryAfter)
 			result.RetryIn = duration
-			logx.Error(svc, "fetch retry", err, map[string]any{"feed": f.URL, "status": res.Status, "retry_in": duration.String()})
-			return result
+			result.Reason = "retry scheduled"
+		} else {
+			result.Reason = "fetch failed"
 		}
-		logx.Error(svc, "fetch", err, map[string]any{"feed": f.URL})
 		return result
 	}
 
 	backoffs.Reset(f.ID)
 
-	if res.Status == http.StatusNotModified || res.Feed == nil {
+	if res.Status == http.StatusNotModified {
 		result.Skipped = true
-		logx.Info(svc, "feed not modified", map[string]any{"feed": f.URL})
+		result.Reason = "not modified"
+		return result
+	}
+
+	if res.Feed == nil {
+		result.Skipped = true
+		result.Reason = "no content"
 		return result
 	}
 
@@ -170,21 +209,27 @@ func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient doc
 		LastCrawled:  sqlNullTime(updateTime),
 		Title:        title,
 	}); err != nil {
-		logx.Error(svc, "update feed", err, map[string]any{"feed": f.URL})
-	} else {
-		result.Mutated = true
-	}
-
-	if res.Feed == nil {
+		result.Err = err
+		result.Reason = "update feed"
 		return result
 	}
+
+	result.Mutated = true
 
 	var docs []search.Document
 	for _, entry := range res.Feed.Items {
 		params := item.FromFeedItem(f.ID, entry)
 		output, err := repo.UpsertItem(ctx, params)
 		if err != nil {
-			logx.Error(svc, "upsert item", err, map[string]any{"feed": f.URL})
+			wrapped := fmt.Errorf("upsert item: %w", err)
+			if result.Err != nil {
+				result.Err = errors.Join(result.Err, wrapped)
+			} else {
+				result.Err = wrapped
+			}
+			if result.Reason == "" {
+				result.Reason = "item upsert"
+			}
 			continue
 		}
 		doc := search.Document{
@@ -200,19 +245,15 @@ func FetchFeed(ctx context.Context, svc string, repo feedStore, searchClient doc
 			doc.PublishedAt = &t
 		}
 		docs = append(docs, doc)
-		if output.Fresh {
-			logx.Info(svc, "item indexed", map[string]any{"id": output.Item.ID, "feed": f.URL})
-		}
 	}
 
 	result.Items = len(docs)
 	if err := searchClient.UpsertDocuments(ctx, docs); err != nil {
 		result.Err = err
-		logx.Error(svc, "search upsert", err, map[string]any{"feed": f.URL, "count": len(docs)})
+		result.Reason = "search upsert"
 		return result
 	}
 
-	logx.Info(svc, "feed processed", map[string]any{"feed": f.URL, "items": len(docs)})
 	return result
 }
 

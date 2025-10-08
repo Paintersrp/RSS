@@ -12,8 +12,8 @@ ORDER BY title ASC, url ASC;
 
 -- name: UpdateFeedCrawlState :one
 UPDATE feeds
-SET etag = sqlc.arg(etag),
-    last_modified = sqlc.arg(last_modified),
+SET etag = COALESCE(sqlc.arg(etag), feeds.etag),
+    last_modified = COALESCE(sqlc.arg(last_modified), feeds.last_modified),
     last_crawled = COALESCE(sqlc.arg(last_crawled), last_crawled),
     title = COALESCE(NULLIF(sqlc.arg(new_title)::text, ''), title)
 WHERE id = sqlc.arg(id)
