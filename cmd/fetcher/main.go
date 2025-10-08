@@ -101,7 +101,6 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 	}
 
 	pendingDocs := make([]search.Document, 0, batchSize)
-	flushFailed := false
 
 	for _, f := range feeds {
 		result, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
@@ -110,7 +109,7 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 			pendingDocs = append(pendingDocs, docs...)
 		}
 
-		if !flushFailed && len(pendingDocs) >= batchSize {
+		if len(pendingDocs) >= batchSize {
 			for len(pendingDocs) >= batchSize {
 				chunk := pendingDocs[:batchSize]
 				logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
@@ -119,17 +118,22 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 					indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, chunk)
 					pendingDocs = pendingDocs[indexed:]
 					if fallbackErr != nil {
-						flushFailed = true
-						combined := errors.Join(err, fallbackErr)
-						if result.Err != nil {
-							result.Err = errors.Join(result.Err, combined)
+						if len(pendingDocs) > 0 {
+							skipped := pendingDocs[0]
+							logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"document_id": skipped.ID})
+							pendingDocs = pendingDocs[1:]
 						} else {
-							result.Err = combined
+							logx.Error(svc, "fallback search upsert", fallbackErr, nil)
+						}
+						if result.Err != nil {
+							result.Err = errors.Join(result.Err, err, fallbackErr)
+						} else {
+							result.Err = errors.Join(err, fallbackErr)
 						}
 						if result.Reason == "" {
 							result.Reason = "search upsert"
 						}
-						break
+						continue
 					}
 					continue
 				}
@@ -169,16 +173,30 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 		}
 	}
 
-	if !flushFailed && len(pendingDocs) > 0 {
-		logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(pendingDocs)})
-		if err := searchClient.UpsertBatch(ctx, pendingDocs); err != nil {
-			logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(pendingDocs)})
-			indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, pendingDocs)
+	for len(pendingDocs) > 0 {
+		chunkSize := batchSize
+		if chunkSize > len(pendingDocs) {
+			chunkSize = len(pendingDocs)
+		}
+		chunk := pendingDocs[:chunkSize]
+		logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
+		if err := searchClient.UpsertBatch(ctx, chunk); err != nil {
+			logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(chunk)})
+			indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, chunk)
 			pendingDocs = pendingDocs[indexed:]
 			if fallbackErr != nil {
-				logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"remaining": len(pendingDocs)})
+				if len(pendingDocs) > 0 {
+					skipped := pendingDocs[0]
+					logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"document_id": skipped.ID})
+					pendingDocs = pendingDocs[1:]
+				} else {
+					logx.Error(svc, "fallback search upsert", fallbackErr, nil)
+				}
+				continue
 			}
+			continue
 		}
+		pendingDocs = pendingDocs[chunkSize:]
 	}
 }
 
