@@ -39,6 +39,16 @@ func TestNormalize(t *testing.T) {
 			want: "https://example.com?Keep=1",
 		},
 		{
+			name: "retains ipv6 brackets without port",
+			in:   "http://[2001:db8::1]/path",
+			want: "http://[2001:db8::1]/path",
+		},
+		{
+			name: "retains ipv6 brackets when stripping default port",
+			in:   "https://[2001:db8::1]:443/?utm_source=x",
+			want: "https://[2001:db8::1]",
+		},
+		{
 			name: "removes tracking parameters with varied casing",
 			in:   "https://example.com/path/?ID=42&Fbclid=abc&utm_campaign=test&GCLID=123",
 			want: "https://example.com/path?ID=42",
