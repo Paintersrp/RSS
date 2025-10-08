@@ -84,12 +84,18 @@ type stubSearchClient struct {
 	batchErr      error
 	batchErrLimit int
 	batchErrCount int
+	docErrs       []error
 }
 
 func (s *stubSearchClient) UpsertDocuments(ctx context.Context, docs []search.Document) error {
 	copied := make([]search.Document, len(docs))
 	copy(copied, docs)
 	s.docCalls = append(s.docCalls, copied)
+	if len(s.docErrs) > 0 {
+		err := s.docErrs[0]
+		s.docErrs = s.docErrs[1:]
+		return err
+	}
 	return nil
 }
 
@@ -386,19 +392,8 @@ func TestRunIndexesOnlyChangedItems(t *testing.T) {
 }
 
 func TestRunFallsBackToSingleDocumentUpserts(t *testing.T) {
-	repo := &stubFeedStore{
-		feeds: []store.Feed{{
-			ID:     "feed-1",
-			URL:    "http://example.com/feed",
-			Active: true,
-		}},
-	}
-	searchClient := &stubSearchClient{
-		batchErr:      errors.New("batch failed"),
-		batchErrLimit: 1,
-	}
-	fetcher := &stubFetcher{responses: []fetchResponse{
-		{
+	makeFetcher := func() *stubFetcher {
+		return &stubFetcher{responses: []fetchResponse{{
 			result: feed.Result{
 				Status: http.StatusOK,
 				Feed: &gofeed.Feed{Items: []*gofeed.Item{
@@ -412,25 +407,70 @@ func TestRunFallsBackToSingleDocumentUpserts(t *testing.T) {
 					},
 				}},
 			},
-		},
-	}}
-
-	ctx := context.Background()
-	run(ctx, "fetcher", repo, searchClient, fetcher, newBackoffTracker(), 10)
-
-	if len(searchClient.batchCalls) != 1 {
-		t.Fatalf("expected one batch attempt, got %d", len(searchClient.batchCalls))
+		}}}
 	}
-	if len(searchClient.docCalls) != 2 {
-		t.Fatalf("expected two fallback upserts, got %d", len(searchClient.docCalls))
-	}
-	gotTitles := []string{searchClient.docCalls[0][0].Title, searchClient.docCalls[1][0].Title}
-	wantTitles := []string{"First", "Second"}
-	for i, want := range wantTitles {
-		if gotTitles[i] != want {
-			t.Fatalf("fallback doc %d title = %q, want %q", i, gotTitles[i], want)
+
+	t.Run("indexes documents individually", func(t *testing.T) {
+		repo := &stubFeedStore{
+			feeds: []store.Feed{{
+				ID:     "feed-1",
+				URL:    "http://example.com/feed",
+				Active: true,
+			}},
 		}
-	}
+		searchClient := &stubSearchClient{
+			batchErr:      errors.New("batch failed"),
+			batchErrLimit: 1,
+		}
+
+		ctx := context.Background()
+		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), 10)
+
+		if len(searchClient.batchCalls) != 1 {
+			t.Fatalf("expected one batch attempt, got %d", len(searchClient.batchCalls))
+		}
+		if len(searchClient.docCalls) != 2 {
+			t.Fatalf("expected two fallback upserts, got %d", len(searchClient.docCalls))
+		}
+		gotTitles := []string{searchClient.docCalls[0][0].Title, searchClient.docCalls[1][0].Title}
+		wantTitles := []string{"First", "Second"}
+		for i, want := range wantTitles {
+			if gotTitles[i] != want {
+				t.Fatalf("fallback doc %d title = %q, want %q", i, gotTitles[i], want)
+			}
+		}
+	})
+
+	t.Run("skips failing document but continues", func(t *testing.T) {
+		repo := &stubFeedStore{
+			feeds: []store.Feed{{
+				ID:     "feed-1",
+				URL:    "http://example.com/feed",
+				Active: true,
+			}},
+		}
+		searchClient := &stubSearchClient{
+			batchErr:      errors.New("batch failed"),
+			batchErrLimit: 2,
+			docErrs:       []error{errors.New("doc failed"), nil},
+		}
+
+		ctx := context.Background()
+		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), 10)
+
+		if len(searchClient.batchCalls) != 2 {
+			t.Fatalf("expected two batch attempts, got %d", len(searchClient.batchCalls))
+		}
+		if len(searchClient.docCalls) != 2 {
+			t.Fatalf("expected two fallback upserts, got %d", len(searchClient.docCalls))
+		}
+		if got := searchClient.docCalls[0][0].Title; got != "First" {
+			t.Fatalf("first fallback doc title = %q, want %q", got, "First")
+		}
+		if got := searchClient.docCalls[1][0].Title; got != "Second" {
+			t.Fatalf("second fallback doc title = %q, want %q", got, "Second")
+		}
+	})
 }
 
 // Ensure stub satisfies interfaces at compile time.
