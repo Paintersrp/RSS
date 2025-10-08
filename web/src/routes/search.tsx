@@ -140,6 +140,7 @@ function SearchRoute() {
     queryKey: queryKeys.feeds(),
     queryFn: () => listFeeds(),
     staleTime: 5 * 60 * 1000,
+    meta: { skipGlobalErrorToast: true },
     onError: (error) => {
       console.error('Failed to load feeds', error)
       const message =
@@ -176,6 +177,7 @@ function SearchRoute() {
     }),
     enabled: q.trim().length > 0,
     keepPreviousData: true,
+    meta: { skipGlobalErrorToast: true },
     onError: (error) => {
       console.error('Search request failed', error)
       const message =
