@@ -23,14 +23,16 @@ func CleanHTML(input string, max int) string {
 		max = defaultMaxLength
 	}
 
-	node, err := xhtml.Parse(strings.NewReader(trimmed))
+	nodes, err := xhtml.ParseFragment(strings.NewReader(trimmed), nil)
 	if err != nil {
 		fallback := cleanupPunctuation(collapseWhitespace(html.UnescapeString(trimmed)))
 		return truncate(fallback, max)
 	}
 
 	var builder strings.Builder
-	walk(node, &builder)
+	for _, n := range nodes {
+		walk(n, &builder)
+	}
 
 	cleaned := cleanupPunctuation(collapseWhitespace(builder.String()))
 	return truncate(cleaned, max)
@@ -41,26 +43,31 @@ func walk(n *xhtml.Node, builder *strings.Builder) {
 		return
 	}
 
-	if n.Type == xhtml.ElementNode {
+	switch n.Type {
+	case xhtml.ElementNode:
 		switch strings.ToLower(n.Data) {
 		case "script", "style":
 			return
 		}
-	}
-
-	if n.Type == xhtml.TextNode {
-		text := collapseWhitespace(html.UnescapeString(n.Data))
-		if text != "" {
-			if builder.Len() > 0 {
-				builder.WriteByte(' ')
-			}
-			builder.WriteString(text)
-		}
+	case xhtml.TextNode:
+		appendText(builder, html.UnescapeString(n.Data))
 	}
 
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
 		walk(child, builder)
 	}
+}
+
+func appendText(builder *strings.Builder, text string) {
+	cleaned := collapseWhitespace(text)
+	if cleaned == "" {
+		return
+	}
+
+	if builder.Len() > 0 {
+		builder.WriteByte(' ')
+	}
+	builder.WriteString(cleaned)
 }
 
 func collapseWhitespace(s string) string {
