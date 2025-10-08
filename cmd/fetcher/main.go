@@ -305,6 +305,9 @@ func FetchFeed(ctx context.Context, repo feedStore, _ documentIndexer, fetcher f
 			}
 			continue
 		}
+		if !output.Indexed {
+			continue
+		}
 		doc := search.Document{
 			ID:          output.Item.ID,
 			FeedID:      output.Item.FeedID,

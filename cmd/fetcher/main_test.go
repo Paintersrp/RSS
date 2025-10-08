@@ -15,9 +15,10 @@ import (
 )
 
 type stubFeedStore struct {
-	updates []store.UpdateFeedCrawlStateParams
-	upserts []store.UpsertItemParams
-	feeds   []store.Feed
+	updates       []store.UpdateFeedCrawlStateParams
+	upserts       []store.UpsertItemParams
+	feeds         []store.Feed
+	upsertResults []store.UpsertItemResult
 }
 
 func (s *stubFeedStore) UpdateFeedCrawlState(ctx context.Context, arg store.UpdateFeedCrawlStateParams) (store.Feed, error) {
@@ -35,7 +36,40 @@ func (s *stubFeedStore) UpdateFeedCrawlState(ctx context.Context, arg store.Upda
 
 func (s *stubFeedStore) UpsertItem(ctx context.Context, arg store.UpsertItemParams) (store.UpsertItemResult, error) {
 	s.upserts = append(s.upserts, arg)
-	return store.UpsertItemResult{Item: store.Item{ID: "item", FeedID: arg.FeedID, FeedTitle: "", Title: arg.Title, ContentText: arg.ContentText, URL: arg.URL}}, nil
+	result := store.UpsertItemResult{
+		Item: store.Item{
+			ID:          "item",
+			FeedID:      arg.FeedID,
+			FeedTitle:   "",
+			Title:       arg.Title,
+			ContentText: arg.ContentText,
+			URL:         arg.URL,
+		},
+		Indexed: true,
+	}
+	if len(s.upsertResults) > 0 {
+		result = s.upsertResults[0]
+		s.upsertResults = s.upsertResults[1:]
+		if result.Item.ID == "" {
+			result.Item.ID = "item"
+		}
+		if result.Item.FeedID == "" {
+			result.Item.FeedID = arg.FeedID
+		}
+		if result.Item.FeedTitle == "" {
+			result.Item.FeedTitle = ""
+		}
+		if result.Item.Title == "" {
+			result.Item.Title = arg.Title
+		}
+		if result.Item.ContentText == "" {
+			result.Item.ContentText = arg.ContentText
+		}
+		if result.Item.URL == "" {
+			result.Item.URL = arg.URL
+		}
+	}
+	return result, nil
 }
 
 func (s *stubFeedStore) ListFeeds(ctx context.Context, active bool) ([]store.Feed, error) {
@@ -274,6 +308,80 @@ func TestFetchFeedSanitizesContentText(t *testing.T) {
 			len(searchClient.docCalls),
 			len(searchClient.batchCalls),
 		)
+	}
+}
+
+func TestRunIndexesOnlyChangedItems(t *testing.T) {
+	cases := []struct {
+		name        string
+		indexed     bool
+		wantBatches int
+	}{
+		{name: "unchanged", indexed: false, wantBatches: 0},
+		{name: "mutated", indexed: true, wantBatches: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &stubFeedStore{
+				feeds: []store.Feed{{
+					ID:     "feed-1",
+					URL:    "http://example.com/feed",
+					Active: true,
+				}},
+				upsertResults: []store.UpsertItemResult{{
+					Item: store.Item{
+						ID:          "item-1",
+						FeedID:      "feed-1",
+						FeedTitle:   "Example Feed",
+						Title:       "Example post",
+						ContentText: "body",
+						URL:         "http://example.com/post",
+					},
+					Indexed: tc.indexed,
+				}},
+			}
+			searchClient := &stubSearchClient{}
+			fetcher := &stubFetcher{responses: []fetchResponse{{
+				result: feed.Result{
+					Status: http.StatusOK,
+					Feed: &gofeed.Feed{Items: []*gofeed.Item{{
+						Title:   "Example post",
+						Content: "body",
+						Link:    "http://example.com/post",
+					}}},
+				},
+			}}}
+
+			ctx := context.Background()
+			run(ctx, "fetcher", repo, searchClient, fetcher, newBackoffTracker(), 10)
+
+			if len(repo.upserts) != 1 {
+				t.Fatalf("expected one item upsert, got %d", len(repo.upserts))
+			}
+			if got := len(searchClient.batchCalls); got != tc.wantBatches {
+				t.Fatalf("batch calls = %d, want %d", got, tc.wantBatches)
+			}
+			if tc.wantBatches == 0 {
+				if len(searchClient.docCalls) != 0 {
+					t.Fatalf("expected no fallback upserts, got %d", len(searchClient.docCalls))
+				}
+				return
+			}
+			if len(searchClient.batchCalls[0]) != 1 {
+				t.Fatalf("expected one document in batch, got %d", len(searchClient.batchCalls[0]))
+			}
+			doc := searchClient.batchCalls[0][0]
+			if doc.ID != "item-1" {
+				t.Fatalf("document ID = %q, want %q", doc.ID, "item-1")
+			}
+			if doc.Title != "Example post" {
+				t.Fatalf("document title = %q, want %q", doc.Title, "Example post")
+			}
+			if doc.URL != "http://example.com/post" {
+				t.Fatalf("document URL = %q, want %q", doc.URL, "http://example.com/post")
+			}
+		})
 	}
 }
 
