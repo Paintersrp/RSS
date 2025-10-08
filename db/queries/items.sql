@@ -1,5 +1,14 @@
 -- name: UpsertItem :one
-WITH upsert AS (
+WITH existing AS (
+    SELECT i.id, i.content_hash
+    FROM items i
+    WHERE i.feed_id = sqlc.arg(feed_id)
+      AND (
+          i.guid = sqlc.arg(guid)
+          OR (sqlc.arg(guid) IS NULL AND i.guid IS NULL AND i.url = sqlc.arg(url))
+      )
+),
+upsert AS (
     INSERT INTO items (
         feed_id,
         guid,
@@ -42,6 +51,7 @@ WITH upsert AS (
               content_text,
               published_at,
               retrieved_at,
+              content_hash,
               xmax = 0 AS inserted
 )
 SELECT u.id,
@@ -55,8 +65,10 @@ SELECT u.id,
        u.content_text,
        u.published_at,
        u.retrieved_at,
-       u.inserted
+       u.inserted,
+       (u.inserted OR e.content_hash IS DISTINCT FROM u.content_hash) AS indexed
 FROM upsert u
+LEFT JOIN existing e ON e.id = u.id
 JOIN feeds f ON f.id = u.feed_id;
 
 -- name: ListRecent :many

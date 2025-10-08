@@ -160,7 +160,16 @@ func (q *Queries) ListRecent(ctx context.Context, arg ListRecentParams) ([]ListR
 }
 
 const upsertItem = `-- name: UpsertItem :one
-WITH upsert AS (
+WITH existing AS (
+    SELECT i.id, i.content_hash
+    FROM items i
+    WHERE i.feed_id = $1
+      AND (
+          i.guid = $2
+          OR ($2 IS NULL AND i.guid IS NULL AND i.url = $3)
+      )
+),
+upsert AS (
     INSERT INTO items (
         feed_id,
         guid,
@@ -203,6 +212,7 @@ WITH upsert AS (
               content_text,
               published_at,
               retrieved_at,
+              content_hash,
               xmax = 0 AS inserted
 )
 SELECT u.id,
@@ -216,8 +226,10 @@ SELECT u.id,
        u.content_text,
        u.published_at,
        u.retrieved_at,
-       u.inserted
+       u.inserted,
+       (u.inserted OR e.content_hash IS DISTINCT FROM u.content_hash) AS indexed
 FROM upsert u
+LEFT JOIN existing e ON e.id = u.id
 JOIN feeds f ON f.id = u.feed_id
 `
 
@@ -247,6 +259,7 @@ type UpsertItemRow struct {
 	PublishedAt sql.NullTime
 	RetrievedAt time.Time
 	Inserted    bool
+	Indexed     sql.NullBool
 }
 
 func (q *Queries) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertItemRow, error) {
@@ -276,6 +289,7 @@ func (q *Queries) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertI
 		&i.PublishedAt,
 		&i.RetrievedAt,
 		&i.Inserted,
+		&i.Indexed,
 	)
 	return i, err
 }

@@ -115,8 +115,9 @@ type UpsertItemParams struct {
 }
 
 type UpsertItemResult struct {
-	Item  Item
-	Fresh bool
+	Item    Item
+	Fresh   bool
+	Indexed bool
 }
 
 func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertItemResult, error) {
@@ -142,7 +143,10 @@ func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertIte
 	}
 
 	item := mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt)
-	return UpsertItemResult{Item: item, Fresh: row.Inserted}, nil
+
+	indexed := row.Indexed.Valid && row.Indexed.Bool
+
+	return UpsertItemResult{Item: item, Fresh: row.Inserted, Indexed: indexed}, nil
 }
 
 type ListRecentParams struct {
