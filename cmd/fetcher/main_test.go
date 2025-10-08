@@ -37,13 +37,21 @@ func (s *stubFeedStore) UpsertItem(ctx context.Context, arg store.UpsertItemPara
 }
 
 type stubSearchClient struct {
-	calls [][]search.Document
+	docCalls   [][]search.Document
+	batchCalls [][]search.Document
 }
 
 func (s *stubSearchClient) UpsertDocuments(ctx context.Context, docs []search.Document) error {
 	copied := make([]search.Document, len(docs))
 	copy(copied, docs)
-	s.calls = append(s.calls, copied)
+	s.docCalls = append(s.docCalls, copied)
+	return nil
+}
+
+func (s *stubSearchClient) UpsertBatch(ctx context.Context, docs []search.Document) error {
+	copied := make([]search.Document, len(docs))
+	copy(copied, docs)
+	s.batchCalls = append(s.batchCalls, copied)
 	return nil
 }
 
@@ -104,7 +112,7 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -120,25 +128,39 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	if repo.updates[0].LastModified.String != lastModified {
 		t.Fatalf("expected last modified %q stored, got %q", lastModified, repo.updates[0].LastModified.String)
 	}
-	if len(searchClient.calls) != 1 {
-		t.Fatalf("expected one search upsert call, got %d", len(searchClient.calls))
+	if len(docs) != 0 {
+		t.Fatalf("expected returned documents to match item upserts, got %d", len(docs))
+	}
+	if len(searchClient.docCalls) != 0 || len(searchClient.batchCalls) != 0 {
+		t.Fatalf(
+			"expected no search calls during fetch, got doc=%d batch=%d",
+			len(searchClient.docCalls),
+			len(searchClient.batchCalls),
+		)
 	}
 
 	feedRecord.ETag = sql.NullString{Valid: true, String: etag}
 	feedRecord.LastModified = sql.NullString{Valid: true, String: lastModified}
 
-	second := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
+	second, moreDocs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
 	if second.Status != http.StatusNotModified {
 		t.Fatalf("expected status 304, got %d", second.Status)
 	}
 	if second.Mutated {
 		t.Fatalf("did not expect mutation on 304")
 	}
+	if len(moreDocs) != 0 {
+		t.Fatalf("expected no documents returned for not modified feed, got %d", len(moreDocs))
+	}
+	if len(searchClient.docCalls) != 0 || len(searchClient.batchCalls) != 0 {
+		t.Fatalf(
+			"expected no search calls during fetches, got doc=%d batch=%d",
+			len(searchClient.docCalls),
+			len(searchClient.batchCalls),
+		)
+	}
 	if len(repo.updates) != 1 {
 		t.Fatalf("expected no additional update call, got %d", len(repo.updates))
-	}
-	if len(searchClient.calls) != 1 {
-		t.Fatalf("expected no additional search call, got %d", len(searchClient.calls))
 	}
 	if len(fetcher.calls) != 2 {
 		t.Fatalf("expected two fetch calls, got %d", len(fetcher.calls))
@@ -166,7 +188,7 @@ func TestFetchFeedCanonicalizesItemURLs(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -177,11 +199,18 @@ func TestFetchFeedCanonicalizesItemURLs(t *testing.T) {
 	if repo.upserts[0].URL != wantURL {
 		t.Fatalf("stored URL = %q, want %q", repo.upserts[0].URL, wantURL)
 	}
-	if len(searchClient.calls) != 1 || len(searchClient.calls[0]) != 1 {
-		t.Fatalf("expected one document upsert call with one document, got %+v", searchClient.calls)
+	if len(docs) != 1 {
+		t.Fatalf("expected one document returned, got %d", len(docs))
 	}
-	if searchClient.calls[0][0].URL != wantURL {
-		t.Fatalf("indexed URL = %q, want %q", searchClient.calls[0][0].URL, wantURL)
+	if docs[0].URL != wantURL {
+		t.Fatalf("document URL = %q, want %q", docs[0].URL, wantURL)
+	}
+	if len(searchClient.docCalls) != 0 || len(searchClient.batchCalls) != 0 {
+		t.Fatalf(
+			"expected no search calls during fetch, got doc=%d batch=%d",
+			len(searchClient.docCalls),
+			len(searchClient.batchCalls),
+		)
 	}
 }
 
@@ -203,7 +232,7 @@ func TestFetchFeedSanitizesContentText(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -216,11 +245,18 @@ func TestFetchFeedSanitizesContentText(t *testing.T) {
 		t.Fatalf("stored content text = %q, want %q", repo.upserts[0].ContentText, wantContent)
 	}
 
-	if len(searchClient.calls) != 1 || len(searchClient.calls[0]) != 1 {
-		t.Fatalf("expected one document upsert call with one document, got %+v", searchClient.calls)
+	if len(docs) != 1 {
+		t.Fatalf("expected one document returned, got %d", len(docs))
 	}
-	if searchClient.calls[0][0].ContentText != wantContent {
-		t.Fatalf("indexed content text = %q, want %q", searchClient.calls[0][0].ContentText, wantContent)
+	if docs[0].ContentText != wantContent {
+		t.Fatalf("document content text = %q, want %q", docs[0].ContentText, wantContent)
+	}
+	if len(searchClient.docCalls) != 0 || len(searchClient.batchCalls) != 0 {
+		t.Fatalf(
+			"expected no search calls during fetch, got doc=%d batch=%d",
+			len(searchClient.docCalls),
+			len(searchClient.batchCalls),
+		)
 	}
 }
 
