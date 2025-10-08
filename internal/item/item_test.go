@@ -1,9 +1,9 @@
 package item
 
 import (
-	"testing"
+        "testing"
 
-	"github.com/mmcdole/gofeed"
+        "github.com/mmcdole/gofeed"
 )
 
 func TestFromFeedItemNormalizesURL(t *testing.T) {
@@ -17,11 +17,13 @@ func TestFromFeedItemNormalizesURL(t *testing.T) {
 	}
 }
 
-func TestSanitizeHTML(t *testing.T) {
-	html := `<div><p>Hello <strong>world</strong>!<script>bad()</script></p><p>Second line</p></div>`
-	got := sanitizeHTML(html)
-	const want = "Hello world! Second line"
-	if got != want {
-		t.Fatalf("sanitizeHTML() = %q, want %q", got, want)
-	}
+func TestFromFeedItemSanitizesHTML(t *testing.T) {
+        feedItem := &gofeed.Item{Content: `<div><p>Hello <strong>world</strong>!<script>bad()</script></p><p>Second&nbsp;line</p></div>`}
+
+        params := FromFeedItem("feed-1", feedItem)
+
+        const want = "Hello world! Second line"
+        if params.ContentText != want {
+                t.Fatalf("FromFeedItem ContentText = %q, want %q", params.ContentText, want)
+        }
 }
