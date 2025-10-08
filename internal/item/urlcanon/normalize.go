@@ -17,7 +17,7 @@ var trackingParameters = map[string]struct{}{
 // Normalize canonicalizes the provided URL string for consistent storage and comparison.
 // It trims whitespace, lowercases the scheme and host, strips a leading "www.", removes
 // default ports and fragments, eliminates common tracking parameters, and removes trailing
-// slashes while keeping the root path intact. Invalid URLs are returned unchanged.
+// slashes. Invalid URLs are returned unchanged.
 func Normalize(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -54,10 +54,10 @@ func Normalize(raw string) string {
 		if cleaned == "." {
 			cleaned = ""
 		}
-		if cleaned != "/" {
-			cleaned = strings.TrimSuffix(cleaned, "/")
+		if cleaned == "/" {
+			cleaned = ""
 		}
-		parsed.Path = cleaned
+		parsed.Path = strings.TrimSuffix(cleaned, "/")
 	}
 
 	parsed.Fragment = ""
@@ -75,11 +75,6 @@ func Normalize(raw string) string {
 		} else {
 			parsed.RawQuery = query.Encode()
 		}
-	}
-
-	if parsed.Path == "" && strings.HasSuffix(raw, "/") {
-		// Preserve an explicit root path when the original URL ended with a slash.
-		parsed.Path = "/"
 	}
 
 	return parsed.String()
