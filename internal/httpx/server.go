@@ -19,12 +19,20 @@ import (
 	"courier/internal/store"
 )
 
+type storeAPI interface {
+	ListFeeds(context.Context, bool) ([]store.Feed, error)
+	InsertFeed(context.Context, string) (store.Feed, error)
+	FilterItems(context.Context, store.FilterItemsParams) ([]store.Item, error)
+}
+
 type Config struct {
-	Store   *store.Store
+	Store   storeAPI
 	Search  *search.Client
 	DB      *sql.DB
 	Service string
 }
+
+const maxItemsLimit = 200
 
 func NewServer(cfg Config) *echo.Echo {
 	e := echo.New()
@@ -87,7 +95,17 @@ func NewServer(cfg Config) *echo.Echo {
 
 	e.GET("/items", func(c echo.Context) error {
 		limit := parseInt(c.QueryParam("limit"), 50)
+		if limit < 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "limit must be non-negative")
+		}
+		if limit > maxItemsLimit {
+			limit = maxItemsLimit
+		}
+
 		offset := parseInt(c.QueryParam("offset"), 0)
+		if offset < 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "offset must be non-negative")
+		}
 		feedIDs := c.QueryParams()["feed_id"]
 		for _, id := range feedIDs {
 			if _, err := uuid.Parse(id); err != nil {
