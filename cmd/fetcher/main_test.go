@@ -148,6 +148,43 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	}
 }
 
+func TestFetchFeedCanonicalizesItemURLs(t *testing.T) {
+	repo := &stubFeedStore{}
+	searchClient := &stubSearchClient{}
+	fetcher := &stubFetcher{responses: []fetchResponse{{
+		result: feed.Result{
+			Status: http.StatusOK,
+			Feed: &gofeed.Feed{
+				Items: []*gofeed.Item{{
+					Title: "Example post",
+					Link:  " https://WWW.Example.com:443/posts/Go/?utm_source=rss&gclid=123#fragment ",
+				}},
+			},
+		},
+	}}}
+
+	ctx := context.Background()
+	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
+
+	result := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
+	if result.Status != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", result.Status)
+	}
+	if len(repo.upserts) != 1 {
+		t.Fatalf("expected one item upsert, got %d", len(repo.upserts))
+	}
+	const wantURL = "https://example.com/posts/Go"
+	if repo.upserts[0].URL != wantURL {
+		t.Fatalf("stored URL = %q, want %q", repo.upserts[0].URL, wantURL)
+	}
+	if len(searchClient.calls) != 1 || len(searchClient.calls[0]) != 1 {
+		t.Fatalf("expected one document upsert call with one document, got %+v", searchClient.calls)
+	}
+	if searchClient.calls[0][0].URL != wantURL {
+		t.Fatalf("indexed URL = %q, want %q", searchClient.calls[0][0].URL, wantURL)
+	}
+}
+
 // Ensure stub satisfies interfaces at compile time.
 var _ feedStore = (*stubFeedStore)(nil)
 var _ documentIndexer = (*stubSearchClient)(nil)

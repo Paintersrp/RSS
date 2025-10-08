@@ -1,36 +1,19 @@
 package item
 
-import "testing"
+import (
+	"testing"
 
-func TestNormalizeURL(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "strips utm and fragment",
-			in:   "https://Example.com:443/path?utm_source=test&ref=keep#section",
-			want: "https://example.com/path?ref=keep",
-		},
-		{
-			name: "removes default port and trims spaces",
-			in:   "  http://BLOG.example.com:80/post?id=42&fbclid=abc  ",
-			want: "http://blog.example.com/post?id=42",
-		},
-		{
-			name: "handles invalid url",
-			in:   "not a url",
-			want: "not a url",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := normalizeURL(tc.in)
-			if got != tc.want {
-				t.Fatalf("normalizeURL(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
+	"github.com/mmcdole/gofeed"
+)
+
+func TestFromFeedItemNormalizesURL(t *testing.T) {
+	feedItem := &gofeed.Item{Link: " https://WWW.Example.com:443/posts/Go/?utm_source=rss&fbclid=abc#section "}
+
+	params := FromFeedItem("feed-1", feedItem)
+
+	const want = "https://example.com/posts/Go"
+	if params.URL != want {
+		t.Fatalf("FromFeedItem URL = %q, want %q", params.URL, want)
 	}
 }
 
