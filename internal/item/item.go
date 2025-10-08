@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	htmlstd "html"
-	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 
 	"github.com/mmcdole/gofeed"
 
+	"courier/internal/item/urlcanon"
 	"courier/internal/store"
 )
 
@@ -53,7 +52,7 @@ func FromFeedItem(feedID string, fi *gofeed.Item) store.UpsertItemParams {
 	retrieved := sql.NullTime{Valid: true, Time: time.Now().UTC()}
 
 	title := strings.TrimSpace(fi.Title)
-	url := normalizeURL(firstNonEmpty(fi.Link))
+	url := urlcanon.Normalize(firstNonEmpty(fi.Link))
 
 	contentHTML := strings.TrimSpace(fi.Content)
 	if contentHTML == "" {
@@ -145,50 +144,4 @@ var punctuationReplacer = strings.NewReplacer(
 
 func cleanupPunctuation(s string) string {
 	return punctuationReplacer.Replace(s)
-}
-
-func normalizeURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" {
-		return raw
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	host := strings.ToLower(parsed.Hostname())
-	port := parsed.Port()
-	if port != "" {
-		if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
-			port = ""
-		}
-	}
-	if port != "" {
-		parsed.Host = host + ":" + port
-	} else {
-		parsed.Host = host
-	}
-	if parsed.Path != "" {
-		cleaned := path.Clean(parsed.Path)
-		if cleaned == "." {
-			cleaned = ""
-		}
-		parsed.Path = cleaned
-	}
-	parsed.Fragment = ""
-
-	query := parsed.Query()
-	for key := range query {
-		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "utm_") || lower == "fbclid" || lower == "gclid" || lower == "mc_cid" || lower == "mc_eid" {
-			query.Del(key)
-		}
-	}
-	if len(query) == 0 {
-		parsed.RawQuery = ""
-	} else {
-		parsed.RawQuery = query.Encode()
-	}
-	return parsed.String()
 }
