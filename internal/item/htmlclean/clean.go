@@ -32,16 +32,23 @@ func CleanHTML(input string, max int) string {
 	}
 
 	var builder strings.Builder
-	var lastEndedWithSpace bool
+	state := writerState{builder: &builder}
 	for _, n := range nodes {
-		walk(n, &builder, &lastEndedWithSpace)
+		walk(n, &state)
 	}
 
 	cleaned := cleanupPunctuation(collapseWhitespace(builder.String()))
 	return truncate(cleaned, max)
 }
 
-func walk(n *xhtml.Node, builder *strings.Builder, lastEndedWithSpace *bool) {
+type writerState struct {
+	builder            *strings.Builder
+	lastEndedWithSpace bool
+	lastRune           rune
+	hasLastRune        bool
+}
+
+func walk(n *xhtml.Node, state *writerState) {
 	if n == nil {
 		return
 	}
@@ -54,50 +61,78 @@ func walk(n *xhtml.Node, builder *strings.Builder, lastEndedWithSpace *bool) {
 			return
 		}
 		defer func() {
-			if lastEndedWithSpace != nil && isBlockElement(name) && builder.Len() > 0 {
-				*lastEndedWithSpace = true
+			if state != nil && isBlockElement(name) && state.builder.Len() > 0 {
+				state.lastEndedWithSpace = true
+				state.hasLastRune = false
 			}
 		}()
 	case xhtml.TextNode:
-		appendText(builder, html.UnescapeString(n.Data), lastEndedWithSpace)
+		appendText(state, html.UnescapeString(n.Data))
 	}
 
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		walk(child, builder, lastEndedWithSpace)
+		walk(child, state)
 	}
 }
 
-func appendText(builder *strings.Builder, text string, lastEndedWithSpace *bool) {
+func appendText(state *writerState, text string) {
+	if state == nil {
+		return
+	}
+
 	cleaned := collapseWhitespace(text)
 
 	leadingWhitespace := hasLeadingWhitespace(text)
 	trailingWhitespace := hasTrailingWhitespace(text)
 
 	if cleaned == "" {
-		if lastEndedWithSpace != nil {
-			*lastEndedWithSpace = trailingWhitespace
+		state.lastEndedWithSpace = trailingWhitespace
+		if trailingWhitespace {
+			state.hasLastRune = false
 		}
 		return
 	}
 
 	needsSeparator := false
-	if builder.Len() > 0 {
-		if lastEndedWithSpace != nil && *lastEndedWithSpace {
+	if state.builder.Len() > 0 {
+		if state.lastEndedWithSpace {
 			needsSeparator = true
 		}
 		if leadingWhitespace {
 			needsSeparator = true
 		}
+		if !needsSeparator && state.hasLastRune {
+			if firstRune, _ := utf8.DecodeRuneInString(cleaned); firstRune != utf8.RuneError {
+				if shouldSeparate(state.lastRune, firstRune) {
+					needsSeparator = true
+				}
+			}
+		}
 	}
 
 	if needsSeparator {
-		builder.WriteByte(' ')
+		state.builder.WriteByte(' ')
+		state.lastEndedWithSpace = true
+		state.hasLastRune = false
 	}
-	builder.WriteString(cleaned)
+	state.builder.WriteString(cleaned)
 
-	if lastEndedWithSpace != nil {
-		*lastEndedWithSpace = trailingWhitespace
+	if lastRune, size := utf8.DecodeLastRuneInString(cleaned); lastRune != utf8.RuneError && size > 0 {
+		state.lastRune = lastRune
+		state.hasLastRune = true
+	} else {
+		state.hasLastRune = false
 	}
+
+	state.lastEndedWithSpace = trailingWhitespace
+	if trailingWhitespace {
+		state.hasLastRune = false
+	}
+}
+
+func shouldSeparate(prev, next rune) bool {
+	return (unicode.IsLetter(prev) || unicode.IsDigit(prev)) &&
+		(unicode.IsLetter(next) || unicode.IsDigit(next))
 }
 
 func hasLeadingWhitespace(s string) bool {
