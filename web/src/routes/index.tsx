@@ -25,6 +25,8 @@ import {
   type RecentItemsSortField,
 } from '@/lib/useRecentItemsQuery'
 
+import { parsePage } from '@/lib/parsePage'
+
 const PAGE_SIZE = 20
 const DEFAULT_SORT: RecentItemsSort = 'published_at:desc'
 const SORTABLE_FIELDS: RecentItemsSortField[] = ['published_at', 'retrieved_at']
@@ -316,11 +318,6 @@ function parseFeeds(value: unknown): string[] {
     return [value]
   }
   return []
-}
-
-function parsePage(value: unknown): number {
-  const numeric = typeof value === 'string' ? Number.parseInt(value, 10) : Number(value)
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : 1
 }
 
 function parseSort(value: unknown): RecentItemsSort {
