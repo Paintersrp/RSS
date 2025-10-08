@@ -4,14 +4,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	htmlstd "html"
 	"strings"
 	"time"
 
-	xhtml "golang.org/x/net/html"
-
 	"github.com/mmcdole/gofeed"
 
+	"courier/internal/item/htmlclean"
 	"courier/internal/item/urlcanon"
 	"courier/internal/store"
 )
@@ -59,9 +57,9 @@ func FromFeedItem(feedID string, fi *gofeed.Item) store.UpsertItemParams {
 		contentHTML = strings.TrimSpace(fi.Description)
 	}
 
-	contentText := sanitizeHTML(contentHTML)
+	contentText := htmlclean.CleanHTML(contentHTML, 2000)
 	if contentText == "" {
-		contentText = strings.TrimSpace(fi.Description)
+		contentText = htmlclean.CleanHTML(fi.Description, 2000)
 	}
 
 	guidValue := ""
@@ -92,56 +90,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func sanitizeHTML(input string) string {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return ""
-	}
-	node, err := xhtml.Parse(strings.NewReader(trimmed))
-	if err != nil {
-		return collapseWhitespace(trimmed)
-	}
-	var builder strings.Builder
-	var walk func(*xhtml.Node)
-	walk = func(n *xhtml.Node) {
-		if n.Type == xhtml.ElementNode {
-			switch strings.ToLower(n.Data) {
-			case "script", "style":
-				return
-			}
-		}
-		if n.Type == xhtml.TextNode {
-			text := collapseWhitespace(htmlstd.UnescapeString(n.Data))
-			if text != "" {
-				if builder.Len() > 0 {
-					builder.WriteByte(' ')
-				}
-				builder.WriteString(text)
-			}
-		}
-		for child := n.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-	walk(node)
-	return cleanupPunctuation(collapseWhitespace(htmlstd.UnescapeString(builder.String())))
-}
-
-func collapseWhitespace(s string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
-}
-
-var punctuationReplacer = strings.NewReplacer(
-	" !", "!",
-	" ?", "?",
-	" ,", ",",
-	" .", ".",
-	" ;", ";",
-	" :", ":",
-)
-
-func cleanupPunctuation(s string) string {
-	return punctuationReplacer.Replace(s)
 }
