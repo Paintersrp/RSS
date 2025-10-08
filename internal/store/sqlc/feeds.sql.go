@@ -74,8 +74,8 @@ func (q *Queries) ListFeeds(ctx context.Context, active bool) ([]Feed, error) {
 
 const updateFeedCrawlState = `-- name: UpdateFeedCrawlState :one
 UPDATE feeds
-SET etag = $1,
-    last_modified = $2,
+SET etag = COALESCE($1, feeds.etag),
+    last_modified = COALESCE($2, feeds.last_modified),
     last_crawled = COALESCE($3, last_crawled),
     title = COALESCE(NULLIF($4::text, ''), title)
 WHERE id = $5
