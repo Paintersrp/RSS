@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"courier/internal/logx"
 	meilisearch "github.com/meilisearch/meilisearch-go"
 )
 
@@ -126,6 +127,17 @@ func (c *Client) UpsertDocuments(ctx context.Context, docs []Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
+	_, err := c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
+	return err
+}
+
+func (c *Client) UpsertBatch(ctx context.Context, docs []Document) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	logx.Info(c.svc, "upsert batch", map[string]any{"index": c.index, "batch_size": len(docs)})
+
 	_, err := c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
 	return err
 }
