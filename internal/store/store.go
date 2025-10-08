@@ -194,6 +194,45 @@ func (s *Store) ListRecent(ctx context.Context, arg ListRecentParams) ([]Item, e
 	return items, nil
 }
 
+func (s *Store) ListRecentFiltered(ctx context.Context, feedIDs []string, direction SortDirection, limit, offset int32) ([]Item, error) {
+	sortDirection := direction
+	if sortDirection == "" {
+		sortDirection = SortDirectionDesc
+	}
+
+	if sortDirection != SortDirectionAsc && sortDirection != SortDirectionDesc {
+		return nil, fmt.Errorf("store: invalid sort direction %q", sortDirection)
+	}
+
+	var parsedIDs []uuid.UUID
+	if len(feedIDs) > 0 {
+		parsedIDs = make([]uuid.UUID, len(feedIDs))
+		for i, id := range feedIDs {
+			parsed, err := uuid.Parse(id)
+			if err != nil {
+				return nil, err
+			}
+			parsedIDs[i] = parsed
+		}
+	}
+
+	rows, err := s.queries.ListRecentFiltered(ctx, sqlc.ListRecentFilteredParams{
+		FeedIds:       parsedIDs,
+		SortDirection: string(sortDirection),
+		ResultLimit:   limit,
+		ResultOffset:  offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
+	}
+	return items, nil
+}
+
 func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int32) ([]Item, error) {
 	id, err := uuid.Parse(feedID)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const listByFeed = `-- name: ListByFeed :many
@@ -133,6 +134,90 @@ func (q *Queries) ListRecent(ctx context.Context, arg ListRecentParams) ([]ListR
 	items := []ListRecentRow{}
 	for rows.Next() {
 		var i ListRecentRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FeedID,
+			&i.FeedTitle,
+			&i.Guid,
+			&i.Url,
+			&i.Title,
+			&i.Author,
+			&i.ContentHtml,
+			&i.ContentText,
+			&i.PublishedAt,
+			&i.RetrievedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentFiltered = `-- name: ListRecentFiltered :many
+SELECT i.id,
+       i.feed_id,
+       f.title AS feed_title,
+       i.guid,
+       i.url,
+       i.title,
+       i.author,
+       i.content_html,
+       i.content_text,
+       i.published_at,
+       i.retrieved_at
+FROM items i
+JOIN feeds f ON f.id = i.feed_id
+WHERE $1::uuid[] IS NULL
+   OR i.feed_id = ANY($1::uuid[])
+ORDER BY CASE WHEN $2::text = 'asc' THEN i.published_at END ASC NULLS LAST,
+         CASE WHEN $2::text = 'desc' THEN i.published_at END DESC NULLS LAST,
+         i.retrieved_at DESC
+LIMIT $4::int
+OFFSET $3::int
+`
+
+type ListRecentFilteredParams struct {
+	FeedIds       []uuid.UUID
+	SortDirection string
+	ResultOffset  int32
+	ResultLimit   int32
+}
+
+type ListRecentFilteredRow struct {
+	ID          uuid.UUID
+	FeedID      uuid.UUID
+	FeedTitle   string
+	Guid        sql.NullString
+	Url         string
+	Title       string
+	Author      sql.NullString
+	ContentHtml string
+	ContentText string
+	PublishedAt sql.NullTime
+	RetrievedAt time.Time
+}
+
+func (q *Queries) ListRecentFiltered(ctx context.Context, arg ListRecentFilteredParams) ([]ListRecentFilteredRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentFiltered,
+		pq.Array(arg.FeedIds),
+		arg.SortDirection,
+		arg.ResultOffset,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentFilteredRow{}
+	for rows.Next() {
+		var i ListRecentFilteredRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.FeedID,
