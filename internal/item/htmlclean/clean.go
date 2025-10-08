@@ -3,6 +3,8 @@ package htmlclean
 import (
 	"html"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
 )
@@ -30,44 +32,99 @@ func CleanHTML(input string, max int) string {
 	}
 
 	var builder strings.Builder
+	var lastEndedWithSpace bool
 	for _, n := range nodes {
-		walk(n, &builder)
+		walk(n, &builder, &lastEndedWithSpace)
 	}
 
 	cleaned := cleanupPunctuation(collapseWhitespace(builder.String()))
 	return truncate(cleaned, max)
 }
 
-func walk(n *xhtml.Node, builder *strings.Builder) {
+func walk(n *xhtml.Node, builder *strings.Builder, lastEndedWithSpace *bool) {
 	if n == nil {
 		return
 	}
 
 	switch n.Type {
 	case xhtml.ElementNode:
-		switch strings.ToLower(n.Data) {
+		name := strings.ToLower(n.Data)
+		switch name {
 		case "script", "style":
 			return
 		}
+		defer func() {
+			if lastEndedWithSpace != nil && isBlockElement(name) && builder.Len() > 0 {
+				*lastEndedWithSpace = true
+			}
+		}()
 	case xhtml.TextNode:
-		appendText(builder, html.UnescapeString(n.Data))
+		appendText(builder, html.UnescapeString(n.Data), lastEndedWithSpace)
 	}
 
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		walk(child, builder)
+		walk(child, builder, lastEndedWithSpace)
 	}
 }
 
-func appendText(builder *strings.Builder, text string) {
+func appendText(builder *strings.Builder, text string, lastEndedWithSpace *bool) {
 	cleaned := collapseWhitespace(text)
+
+	leadingWhitespace := hasLeadingWhitespace(text)
+	trailingWhitespace := hasTrailingWhitespace(text)
+
 	if cleaned == "" {
+		if lastEndedWithSpace != nil {
+			*lastEndedWithSpace = trailingWhitespace
+		}
 		return
 	}
 
+	needsSeparator := false
 	if builder.Len() > 0 {
+		if lastEndedWithSpace != nil && *lastEndedWithSpace {
+			needsSeparator = true
+		}
+		if leadingWhitespace {
+			needsSeparator = true
+		}
+	}
+
+	if needsSeparator {
 		builder.WriteByte(' ')
 	}
 	builder.WriteString(cleaned)
+
+	if lastEndedWithSpace != nil {
+		*lastEndedWithSpace = trailingWhitespace
+	}
+}
+
+func hasLeadingWhitespace(s string) bool {
+	for _, r := range s {
+		return unicode.IsSpace(r)
+	}
+	return false
+}
+
+func hasTrailingWhitespace(s string) bool {
+	if s == "" {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return unicode.IsSpace(r)
+}
+
+func isBlockElement(name string) bool {
+	switch name {
+	case "address", "article", "aside", "blockquote", "br", "div", "dl", "dt", "dd",
+		"fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+		"header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table", "tbody",
+		"td", "tfoot", "th", "thead", "tr", "ul":
+		return true
+	default:
+		return false
+	}
 }
 
 func collapseWhitespace(s string) string {
