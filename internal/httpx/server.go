@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/google/uuid"
 
@@ -30,6 +31,7 @@ type Config struct {
 	Search  *search.Client
 	DB      *sql.DB
 	Service string
+	Metrics *Metrics
 }
 
 const maxItemsLimit = 200
@@ -41,6 +43,11 @@ func NewServer(cfg Config) *echo.Echo {
 
 	e.Use(middleware.Recover())
 	e.Use(requestLogger(cfg.Service))
+	if cfg.Metrics != nil {
+		e.Use(cfg.Metrics.Middleware())
+		handler := promhttp.HandlerFor(cfg.Metrics.Gatherer(), promhttp.HandlerOpts{})
+		e.GET("/metrics", echo.WrapHandler(handler))
+	}
 
 	e.GET("/healthz", func(c echo.Context) error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)

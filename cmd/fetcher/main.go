@@ -46,8 +46,8 @@ func main() {
 	}
 	defer db.Close()
 
-	repo := store.New(db)
-	searchClient := search.New(meiliURL)
+	repo := store.New(db, nil)
+	searchClient := search.New(meiliURL, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := db.PingContext(ctx); err != nil {
 		fatal(svc, "ping db", err, nil)

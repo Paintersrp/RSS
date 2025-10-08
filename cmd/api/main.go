@@ -11,6 +11,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"courier/internal/httpx"
 	"courier/internal/logx"
@@ -22,6 +23,9 @@ func main() {
 	svc := "api"
 	dsn := requireEnv(svc, "COURIER_DSN")
 	meiliURL := requireEnv(svc, "MEILI_URL")
+
+	metrics := httpx.NewMetrics(svc)
+	prometheus.MustRegister(metrics.Collectors()...)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -38,17 +42,18 @@ func main() {
 		fatal(svc, "ping db", err, nil)
 	}
 
-	searchClient := search.New(meiliURL)
+	searchClient := search.New(meiliURL, metrics)
 	if err := searchClient.EnsureIndex(ctx); err != nil {
 		fatal(svc, "ensure index", err, nil)
 	}
 
-	store := store.New(db)
+	store := store.New(db, metrics)
 	srv := httpx.NewServer(httpx.Config{
 		Store:   store,
 		Search:  searchClient,
 		DB:      db,
 		Service: svc,
+		Metrics: metrics,
 	})
 
 	const addr = ":8080"

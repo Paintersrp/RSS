@@ -20,25 +20,37 @@ type Document struct {
 	PublishedAt *time.Time `json:"published_at,omitempty"`
 }
 
-type Client struct {
-	svc    string
-	client meilisearch.ServiceManager
-	index  string
+type Metrics interface {
+	ObserveSearch(method string, err error, duration time.Duration)
 }
 
-func New(url string) *Client {
+type Client struct {
+	svc     string
+	client  meilisearch.ServiceManager
+	index   string
+	metrics Metrics
+}
+
+func New(url string, metrics Metrics) *Client {
 	return &Client{
-		svc:    "search",
-		client: meilisearch.New(url),
-		index:  "items",
+		svc:     "search",
+		client:  meilisearch.New(url),
+		index:   "items",
+		metrics: metrics,
 	}
 }
 
-func (c *Client) EnsureIndex(ctx context.Context) error {
-	if _, err := c.client.GetIndexWithContext(ctx, c.index); err != nil {
+func (c *Client) EnsureIndex(ctx context.Context) (err error) {
+	if c.metrics != nil {
+		defer func(start time.Time) {
+			c.metrics.ObserveSearch("EnsureIndex", err, time.Since(start))
+		}(time.Now())
+	}
+
+	if _, err = c.client.GetIndexWithContext(ctx, c.index); err != nil {
 		var apiErr *meilisearch.Error
 		if errors.As(err, &apiErr) && apiErr.MeilisearchApiError.Code == "index_not_found" {
-			if _, err := c.client.CreateIndexWithContext(ctx, &meilisearch.IndexConfig{Uid: c.index, PrimaryKey: "id"}); err != nil {
+			if _, err = c.client.CreateIndexWithContext(ctx, &meilisearch.IndexConfig{Uid: c.index, PrimaryKey: "id"}); err != nil {
 				return err
 			}
 		} else {
@@ -50,15 +62,22 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 		SearchableAttributes: []string{"title", "content_text"},
 		FilterableAttributes: []string{"feed_id", "published_at"},
 	}
-	if _, err := c.client.Index(c.index).UpdateSettingsWithContext(ctx, settings); err != nil {
+	if _, err = c.client.Index(c.index).UpdateSettingsWithContext(ctx, settings); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (c *Client) Health(ctx context.Context) error {
+func (c *Client) Health(ctx context.Context) (err error) {
+	if c.metrics != nil {
+		defer func(start time.Time) {
+			c.metrics.ObserveSearch("Health", err, time.Since(start))
+		}(time.Now())
+	}
+
 	if !c.client.IsHealthy() {
-		return fmt.Errorf("meili unhealthy")
+		err = fmt.Errorf("meili unhealthy")
+		return err
 	}
 	return nil
 }
@@ -75,7 +94,13 @@ type SearchFilters struct {
 	FeedID string
 }
 
-func (c *Client) Search(ctx context.Context, query string, limit, offset int, filters SearchFilters) (SearchResponse, error) {
+func (c *Client) Search(ctx context.Context, query string, limit, offset int, filters SearchFilters) (resp SearchResponse, err error) {
+	if c.metrics != nil {
+		defer func(start time.Time) {
+			c.metrics.ObserveSearch("Search", err, time.Since(start))
+		}(time.Now())
+	}
+
 	req := &meilisearch.SearchRequest{
 		Offset: int64(offset),
 		Limit:  int64(limit),
@@ -84,12 +109,13 @@ func (c *Client) Search(ctx context.Context, query string, limit, offset int, fi
 		req.Filter = fmt.Sprintf("feed_id = \"%s\"", filters.FeedID)
 	}
 
-	res, err := c.client.Index(c.index).SearchWithContext(ctx, query, req)
+	var searchRes *meilisearch.SearchResponse
+	searchRes, err = c.client.Index(c.index).SearchWithContext(ctx, query, req)
 	if err != nil {
 		return SearchResponse{}, err
 	}
-	hits := make([]Document, 0, len(res.Hits))
-	for _, hit := range res.Hits {
+	hits := make([]Document, 0, len(searchRes.Hits))
+	for _, hit := range searchRes.Hits {
 		m, ok := hit.(map[string]interface{})
 		if !ok {
 			continue
@@ -114,31 +140,44 @@ func (c *Client) Search(ctx context.Context, query string, limit, offset int, fi
 			doc.URL = v
 		}
 		if v, ok := m["published_at"].(string); ok && v != "" {
-			if t, err := time.Parse(time.RFC3339, v); err == nil {
-				doc.PublishedAt = &t
+			if parsed, parseErr := time.Parse(time.RFC3339, v); parseErr == nil {
+				doc.PublishedAt = &parsed
 			}
 		}
 		hits = append(hits, doc)
 	}
-	return SearchResponse{Query: query, Limit: limit, Offset: offset, EstimatedTotal: res.EstimatedTotalHits, Hits: hits}, nil
+	resp = SearchResponse{Query: query, Limit: limit, Offset: offset, EstimatedTotal: searchRes.EstimatedTotalHits, Hits: hits}
+	return resp, nil
 }
 
-func (c *Client) UpsertDocuments(ctx context.Context, docs []Document) error {
+func (c *Client) UpsertDocuments(ctx context.Context, docs []Document) (err error) {
+	if c.metrics != nil {
+		defer func(start time.Time) {
+			c.metrics.ObserveSearch("UpsertDocuments", err, time.Since(start))
+		}(time.Now())
+	}
+
 	if len(docs) == 0 {
 		return nil
 	}
-	_, err := c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
+	_, err = c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
 	return err
 }
 
-func (c *Client) UpsertBatch(ctx context.Context, docs []Document) error {
+func (c *Client) UpsertBatch(ctx context.Context, docs []Document) (err error) {
+	if c.metrics != nil {
+		defer func(start time.Time) {
+			c.metrics.ObserveSearch("UpsertBatch", err, time.Since(start))
+		}(time.Now())
+	}
+
 	if len(docs) == 0 {
 		return nil
 	}
 
 	logx.Info(c.svc, "upsert batch", map[string]any{"index": c.index, "batch_size": len(docs)})
 
-	_, err := c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
+	_, err = c.client.Index(c.index).UpdateDocumentsWithContext(ctx, docs)
 	return err
 }
 
