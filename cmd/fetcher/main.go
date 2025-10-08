@@ -86,7 +86,12 @@ func requireEnv(service, key string) string {
 	return value
 }
 
-func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker, batchSize int) {
+type feedRepository interface {
+	feedStore
+	ListFeeds(context.Context, bool) ([]store.Feed, error)
+}
+
+func run(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, batchSize int) {
 	logx.Info(svc, "crawl tick", nil)
 
 	feeds, err := repo.ListFeeds(ctx, true)
@@ -110,17 +115,23 @@ func run(ctx context.Context, svc string, repo *store.Store, searchClient *searc
 				chunk := pendingDocs[:batchSize]
 				logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
 				if err := searchClient.UpsertBatch(ctx, chunk); err != nil {
-					flushFailed = true
 					logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(chunk)})
-					if result.Err != nil {
-						result.Err = errors.Join(result.Err, err)
-					} else {
-						result.Err = err
+					indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, chunk)
+					pendingDocs = pendingDocs[indexed:]
+					if fallbackErr != nil {
+						flushFailed = true
+						combined := errors.Join(err, fallbackErr)
+						if result.Err != nil {
+							result.Err = errors.Join(result.Err, combined)
+						} else {
+							result.Err = combined
+						}
+						if result.Reason == "" {
+							result.Reason = "search upsert"
+						}
+						break
 					}
-					if result.Reason == "" {
-						result.Reason = "search upsert"
-					}
-					break
+					continue
 				}
 				pendingDocs = pendingDocs[batchSize:]
 			}
@@ -162,8 +173,22 @@ func run(ctx context.Context, svc string, repo *store.Store, searchClient *searc
 		logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(pendingDocs)})
 		if err := searchClient.UpsertBatch(ctx, pendingDocs); err != nil {
 			logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(pendingDocs)})
+			indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, pendingDocs)
+			pendingDocs = pendingDocs[indexed:]
+			if fallbackErr != nil {
+				logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"remaining": len(pendingDocs)})
+			}
 		}
 	}
+}
+
+func upsertDocumentsIndividually(ctx context.Context, indexer documentIndexer, docs []search.Document) (int, error) {
+	for i, doc := range docs {
+		if err := indexer.UpsertDocuments(ctx, []search.Document{doc}); err != nil {
+			return i, err
+		}
+	}
+	return len(docs), nil
 }
 
 type feedStore interface {

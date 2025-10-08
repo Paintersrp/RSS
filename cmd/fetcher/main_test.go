@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -16,6 +17,7 @@ import (
 type stubFeedStore struct {
 	updates []store.UpdateFeedCrawlStateParams
 	upserts []store.UpsertItemParams
+	feeds   []store.Feed
 }
 
 func (s *stubFeedStore) UpdateFeedCrawlState(ctx context.Context, arg store.UpdateFeedCrawlStateParams) (store.Feed, error) {
@@ -36,9 +38,18 @@ func (s *stubFeedStore) UpsertItem(ctx context.Context, arg store.UpsertItemPara
 	return store.UpsertItemResult{Item: store.Item{ID: "item", FeedID: arg.FeedID, FeedTitle: "", Title: arg.Title, ContentText: arg.ContentText, URL: arg.URL}}, nil
 }
 
+func (s *stubFeedStore) ListFeeds(ctx context.Context, active bool) ([]store.Feed, error) {
+	feeds := make([]store.Feed, len(s.feeds))
+	copy(feeds, s.feeds)
+	return feeds, nil
+}
+
 type stubSearchClient struct {
-	docCalls   [][]search.Document
-	batchCalls [][]search.Document
+	docCalls      [][]search.Document
+	batchCalls    [][]search.Document
+	batchErr      error
+	batchErrLimit int
+	batchErrCount int
 }
 
 func (s *stubSearchClient) UpsertDocuments(ctx context.Context, docs []search.Document) error {
@@ -52,6 +63,12 @@ func (s *stubSearchClient) UpsertBatch(ctx context.Context, docs []search.Docume
 	copied := make([]search.Document, len(docs))
 	copy(copied, docs)
 	s.batchCalls = append(s.batchCalls, copied)
+	if s.batchErr != nil {
+		s.batchErrCount++
+		if s.batchErrLimit == 0 || s.batchErrCount <= s.batchErrLimit {
+			return s.batchErr
+		}
+	}
 	return nil
 }
 
@@ -260,7 +277,56 @@ func TestFetchFeedSanitizesContentText(t *testing.T) {
 	}
 }
 
+func TestRunFallsBackToSingleDocumentUpserts(t *testing.T) {
+	repo := &stubFeedStore{
+		feeds: []store.Feed{{
+			ID:     "feed-1",
+			URL:    "http://example.com/feed",
+			Active: true,
+		}},
+	}
+	searchClient := &stubSearchClient{
+		batchErr:      errors.New("batch failed"),
+		batchErrLimit: 1,
+	}
+	fetcher := &stubFetcher{responses: []fetchResponse{
+		{
+			result: feed.Result{
+				Status: http.StatusOK,
+				Feed: &gofeed.Feed{Items: []*gofeed.Item{
+					{
+						Title: "First",
+						Link:  "https://example.com/first",
+					},
+					{
+						Title: "Second",
+						Link:  "https://example.com/second",
+					},
+				}},
+			},
+		},
+	}}
+
+	ctx := context.Background()
+	run(ctx, "fetcher", repo, searchClient, fetcher, newBackoffTracker(), 10)
+
+	if len(searchClient.batchCalls) != 1 {
+		t.Fatalf("expected one batch attempt, got %d", len(searchClient.batchCalls))
+	}
+	if len(searchClient.docCalls) != 2 {
+		t.Fatalf("expected two fallback upserts, got %d", len(searchClient.docCalls))
+	}
+	gotTitles := []string{searchClient.docCalls[0][0].Title, searchClient.docCalls[1][0].Title}
+	wantTitles := []string{"First", "Second"}
+	for i, want := range wantTitles {
+		if gotTitles[i] != want {
+			t.Fatalf("fallback doc %d title = %q, want %q", i, gotTitles[i], want)
+		}
+	}
+}
+
 // Ensure stub satisfies interfaces at compile time.
 var _ feedStore = (*stubFeedStore)(nil)
+var _ feedRepository = (*stubFeedStore)(nil)
 var _ documentIndexer = (*stubSearchClient)(nil)
 var _ feedFetcher = (*stubFetcher)(nil)
