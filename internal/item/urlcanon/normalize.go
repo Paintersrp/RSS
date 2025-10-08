@@ -1,6 +1,7 @@
 package urlcanon
 
 import (
+	"net"
 	"net/url"
 	pathpkg "path"
 	"strings"
@@ -44,9 +45,13 @@ func Normalize(raw string) string {
 	}
 
 	if port != "" {
-		parsed.Host = host + ":" + port
+		parsed.Host = net.JoinHostPort(host, port)
 	} else {
-		parsed.Host = host
+		if strings.Contains(host, ":") {
+			parsed.Host = "[" + host + "]"
+		} else {
+			parsed.Host = host
+		}
 	}
 
 	if parsed.Path != "" {
