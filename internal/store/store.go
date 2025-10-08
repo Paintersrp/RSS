@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +27,28 @@ func New(db *sql.DB) *Store {
 		db:      db,
 		queries: sqlc.New(db),
 	}
+}
+
+type ItemSortField string
+
+const (
+	ItemSortFieldPublishedAt ItemSortField = "published_at"
+	ItemSortFieldRetrievedAt ItemSortField = "retrieved_at"
+)
+
+type SortDirection string
+
+const (
+	SortDirectionAsc  SortDirection = "asc"
+	SortDirectionDesc SortDirection = "desc"
+)
+
+type FilterItemsParams struct {
+	FeedIDs       []string
+	SortField     ItemSortField
+	SortDirection SortDirection
+	Limit         int32
+	Offset        int32
 }
 
 type Feed struct {
@@ -189,6 +213,105 @@ func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int
 	for _, row := range rows {
 		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
 	}
+	return items, nil
+}
+
+func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item, error) {
+	sortField := arg.SortField
+	if sortField == "" {
+		sortField = ItemSortFieldPublishedAt
+	}
+	sortDirection := arg.SortDirection
+	if sortDirection == "" {
+		sortDirection = SortDirectionDesc
+	}
+
+	orderColumn := map[ItemSortField]string{
+		ItemSortFieldPublishedAt: "i.published_at",
+		ItemSortFieldRetrievedAt: "i.retrieved_at",
+	}
+	column, ok := orderColumn[sortField]
+	if !ok {
+		return nil, fmt.Errorf("store: invalid sort field %q", sortField)
+	}
+
+	dirSQL := "DESC"
+	switch sortDirection {
+	case SortDirectionAsc:
+		dirSQL = "ASC"
+	case SortDirectionDesc:
+		dirSQL = "DESC"
+	default:
+		return nil, fmt.Errorf("store: invalid sort direction %q", sortDirection)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("SELECT i.id, i.feed_id, f.title AS feed_title, i.guid, i.url, i.title, i.author, i.content_html, i.content_text, i.published_at, i.retrieved_at FROM items i JOIN feeds f ON f.id = i.feed_id")
+
+	args := make([]any, 0, len(arg.FeedIDs)+2)
+	placeholder := 1
+	if len(arg.FeedIDs) > 0 {
+		ids := make([]uuid.UUID, 0, len(arg.FeedIDs))
+		for _, id := range arg.FeedIDs {
+			parsed, err := uuid.Parse(id)
+			if err != nil {
+				return nil, err
+			}
+			ids = append(ids, parsed)
+		}
+
+		builder.WriteString(" WHERE i.feed_id IN (")
+		for i, id := range ids {
+			if i > 0 {
+				builder.WriteString(", ")
+			}
+			builder.WriteString(fmt.Sprintf("$%d", placeholder))
+			placeholder++
+			args = append(args, id)
+		}
+		builder.WriteString(")")
+	}
+
+	builder.WriteString(" ORDER BY ")
+	if sortField == ItemSortFieldPublishedAt {
+		builder.WriteString(fmt.Sprintf("%s %s NULLS LAST, i.retrieved_at DESC", column, dirSQL))
+	} else {
+		builder.WriteString(fmt.Sprintf("%s %s, i.id DESC", column, dirSQL))
+	}
+
+	builder.WriteString(fmt.Sprintf(" LIMIT $%d OFFSET $%d", placeholder, placeholder+1))
+	args = append(args, arg.Limit, arg.Offset)
+
+	rows, err := s.db.QueryContext(ctx, builder.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]Item, 0)
+	for rows.Next() {
+		var (
+			id          uuid.UUID
+			feedID      uuid.UUID
+			feedTitle   string
+			guid        sql.NullString
+			url         string
+			title       string
+			author      sql.NullString
+			contentHTML string
+			contentText string
+			publishedAt sql.NullTime
+			retrievedAt time.Time
+		)
+		if err := rows.Scan(&id, &feedID, &feedTitle, &guid, &url, &title, &author, &contentHTML, &contentText, &publishedAt, &retrievedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, mapItem(id, feedID, feedTitle, guid, url, title, author, contentHTML, contentText, publishedAt, retrievedAt))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return items, nil
 }
 
