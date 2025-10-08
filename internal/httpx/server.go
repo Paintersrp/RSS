@@ -12,6 +12,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
+	"github.com/google/uuid"
+
 	"courier/internal/logx"
 	"courier/internal/search"
 	"courier/internal/store"
@@ -87,6 +89,11 @@ func NewServer(cfg Config) *echo.Echo {
 		limit := parseInt(c.QueryParam("limit"), 50)
 		offset := parseInt(c.QueryParam("offset"), 0)
 		feedIDs := c.QueryParams()["feed_id"]
+		for _, id := range feedIDs {
+			if _, err := uuid.Parse(id); err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "invalid feed_id")
+			}
+		}
 		sortParam := c.QueryParam("sort")
 		if sortParam == "" {
 			sortParam = "published_at:desc"
