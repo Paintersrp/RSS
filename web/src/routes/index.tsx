@@ -22,10 +22,12 @@ import {
   buildQueryKey,
   useRecentItemsQuery,
   type RecentItemsSort,
+  type RecentItemsSortField,
 } from '@/lib/useRecentItemsQuery'
 
 const PAGE_SIZE = 20
 const DEFAULT_SORT: RecentItemsSort = 'published_at:desc'
+const SORTABLE_FIELDS: RecentItemsSortField[] = ['published_at', 'retrieved_at']
 
 export const Route = createFileRoute('/')({
   validateSearch: (search) => ({
@@ -322,8 +324,14 @@ function parsePage(value: unknown): number {
 }
 
 function parseSort(value: unknown): RecentItemsSort {
-  if (value === 'published_at:asc' || value === 'published_at:desc') {
-    return value
+  if (typeof value === 'string') {
+    const [field, direction] = value.split(':') as [string, string]
+    if (
+      SORTABLE_FIELDS.includes(field as RecentItemsSortField) &&
+      (direction === 'asc' || direction === 'desc')
+    ) {
+      return `${field}:${direction}` as RecentItemsSort
+    }
   }
   return DEFAULT_SORT
 }

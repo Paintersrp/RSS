@@ -59,8 +59,9 @@ export const api = ky.create({
 export interface ListItemsParams {
   limit?: number
   offset?: number
-  sort?: string
-  feed_id?: string | string[]
+  feed_ids?: string[]
+  sortField?: 'published_at' | 'retrieved_at'
+  sortDirection?: 'asc' | 'desc'
 }
 
 export interface ListRecentItemsResponse {
@@ -71,27 +72,24 @@ export interface ListRecentItemsResponse {
 export async function listRecentItems({
   limit = 50,
   offset = 0,
-  sort,
-  feed_id,
+  sortField,
+  sortDirection,
+  feed_ids,
 }: ListItemsParams = {}): Promise<ListRecentItemsResponse> {
   const searchParams = new URLSearchParams()
-  if (limit) {
-    searchParams.set('limit', String(limit))
+  searchParams.set('limit', String(limit))
+  searchParams.set('offset', String(offset))
+
+  if (sortField && sortDirection) {
+    searchParams.set('sort', `${sortField}:${sortDirection}`)
   }
-  if (offset) {
-    searchParams.set('offset', String(offset))
-  }
-  if (sort) {
-    searchParams.set('sort', sort)
-  }
-  if (Array.isArray(feed_id)) {
-    for (const id of feed_id) {
+
+  if (Array.isArray(feed_ids)) {
+    for (const id of feed_ids) {
       if (id) {
         searchParams.append('feed_id', id)
       }
     }
-  } else if (feed_id) {
-    searchParams.set('feed_id', feed_id)
   }
 
   const response = await api.get('items', { searchParams })

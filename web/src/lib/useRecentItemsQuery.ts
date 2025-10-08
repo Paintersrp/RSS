@@ -1,9 +1,15 @@
 import { useQuery, type UseQueryOptions, type UseQueryResult } from '@tanstack/react-query'
 
-import { listRecentItems, type ListRecentItemsResponse } from '@/lib/api'
+import {
+  listRecentItems,
+  type ListItemsParams,
+  type ListRecentItemsResponse,
+} from '@/lib/api'
 import { queryKeys } from '@/lib/query'
 
-export type RecentItemsSort = 'published_at:desc' | 'published_at:asc'
+export type RecentItemsSortField = NonNullable<ListItemsParams['sortField']>
+export type RecentItemsSortDirection = NonNullable<ListItemsParams['sortDirection']>
+export type RecentItemsSort = `${RecentItemsSortField}:${RecentItemsSortDirection}`
 
 export interface RecentItemsQueryState {
   feeds: string[]
@@ -27,12 +33,21 @@ export function buildListParams({
   const offset = (safePage - 1) * limit
   const feedIds = [...feeds].filter((id) => typeof id === 'string' && id.length > 0)
   const sortedFeedIds = feedIds.length > 0 ? [...new Set(feedIds)].sort() : undefined
+  const [sortFieldRaw, sortDirectionRaw] = sort.split(':') as [
+    RecentItemsSortField?,
+    RecentItemsSortDirection?,
+  ]
+  const sortField: RecentItemsSortField =
+    sortFieldRaw === 'retrieved_at' ? 'retrieved_at' : 'published_at'
+  const sortDirection: RecentItemsSortDirection =
+    sortDirectionRaw === 'asc' ? 'asc' : 'desc'
 
   return {
     limit,
     offset,
-    sort,
-    feed_id: sortedFeedIds,
+    sortField,
+    sortDirection,
+    feed_ids: sortedFeedIds,
   } as const
 }
 
