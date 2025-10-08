@@ -22,7 +22,7 @@ import (
 type storeAPI interface {
 	ListFeeds(context.Context, bool) ([]store.Feed, error)
 	InsertFeed(context.Context, string) (store.Feed, error)
-	FilterItems(context.Context, store.FilterItemsParams) ([]store.Item, error)
+	FilterItems(context.Context, store.FilterItemsParams) (store.FilterItemsResult, error)
 }
 
 type Config struct {
@@ -146,7 +146,7 @@ func NewServer(cfg Config) *echo.Echo {
 		}
 
 		ctx := c.Request().Context()
-		items, err := cfg.Store.FilterItems(ctx, store.FilterItemsParams{
+		result, err := cfg.Store.FilterItems(ctx, store.FilterItemsParams{
 			FeedIDs:       feedIDs,
 			SortField:     sortField,
 			SortDirection: sortDirection,
@@ -156,11 +156,15 @@ func NewServer(cfg Config) *echo.Echo {
 		if err != nil {
 			return err
 		}
-		views := make([]itemView, 0, len(items))
-		for _, it := range items {
+		views := make([]itemView, 0, len(result.Items))
+		for _, it := range result.Items {
 			views = append(views, mapItem(it))
 		}
-		return c.JSON(http.StatusOK, views)
+		c.Response().Header().Set("X-Total-Count", strconv.FormatInt(result.Total, 10))
+		return c.JSON(http.StatusOK, map[string]any{
+			"items": views,
+			"total": result.Total,
+		})
 	})
 
 	e.GET("/search", func(c echo.Context) error {

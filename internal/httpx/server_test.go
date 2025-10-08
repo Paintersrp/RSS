@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 type stubStore struct {
-	filterItemsFunc func(context.Context, store.FilterItemsParams) ([]store.Item, error)
+	filterItemsFunc func(context.Context, store.FilterItemsParams) (store.FilterItemsResult, error)
 }
 
 func (s *stubStore) ListFeeds(context.Context, bool) ([]store.Feed, error) {
@@ -21,11 +22,11 @@ func (s *stubStore) InsertFeed(context.Context, string) (store.Feed, error) {
 	return store.Feed{}, nil
 }
 
-func (s *stubStore) FilterItems(ctx context.Context, params store.FilterItemsParams) ([]store.Item, error) {
+func (s *stubStore) FilterItems(ctx context.Context, params store.FilterItemsParams) (store.FilterItemsResult, error) {
 	if s.filterItemsFunc != nil {
 		return s.filterItemsFunc(ctx, params)
 	}
-	return nil, nil
+	return store.FilterItemsResult{}, nil
 }
 
 func TestItemsHandlerValidPagination(t *testing.T) {
@@ -33,7 +34,7 @@ func TestItemsHandlerValidPagination(t *testing.T) {
 
 	called := false
 	stub := &stubStore{
-		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) ([]store.Item, error) {
+		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) (store.FilterItemsResult, error) {
 			called = true
 			if params.Limit != maxItemsLimit {
 				t.Fatalf("expected limit %d, got %d", maxItemsLimit, params.Limit)
@@ -41,7 +42,10 @@ func TestItemsHandlerValidPagination(t *testing.T) {
 			if params.Offset != 5 {
 				t.Fatalf("expected offset 5, got %d", params.Offset)
 			}
-			return []store.Item{}, nil
+			return store.FilterItemsResult{
+				Items: []store.Item{{ID: "1"}},
+				Total: 42,
+			}, nil
 		},
 	}
 
@@ -55,6 +59,23 @@ func TestItemsHandlerValidPagination(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
+	if got := rec.Header().Get("X-Total-Count"); got != "42" {
+		t.Fatalf("expected X-Total-Count header 42, got %q", got)
+	}
+
+	var payload struct {
+		Items []store.Item `json:"items"`
+		Total int64        `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if payload.Total != 42 {
+		t.Fatalf("expected total 42, got %d", payload.Total)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(payload.Items))
+	}
 	if !called {
 		t.Fatalf("expected FilterItems to be called")
 	}
@@ -64,9 +85,9 @@ func TestItemsHandlerNegativeLimit(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubStore{
-		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) ([]store.Item, error) {
+		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) (store.FilterItemsResult, error) {
 			t.Fatalf("FilterItems should not be called for invalid limit")
-			return nil, nil
+			return store.FilterItemsResult{}, nil
 		},
 	}
 
@@ -86,9 +107,9 @@ func TestItemsHandlerNegativeOffset(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubStore{
-		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) ([]store.Item, error) {
+		filterItemsFunc: func(ctx context.Context, params store.FilterItemsParams) (store.FilterItemsResult, error) {
 			t.Fatalf("FilterItems should not be called for invalid offset")
-			return nil, nil
+			return store.FilterItemsResult{}, nil
 		},
 	}
 

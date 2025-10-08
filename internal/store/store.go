@@ -51,6 +51,11 @@ type FilterItemsParams struct {
 	Offset        int32
 }
 
+type FilterItemsResult struct {
+	Items []Item
+	Total int64
+}
+
 type Feed struct {
 	ID           string         `json:"id"`
 	URL          string         `json:"url"`
@@ -255,7 +260,7 @@ func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int
 	return items, nil
 }
 
-func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item, error) {
+func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterItemsResult, error) {
 	sortField := arg.SortField
 	if sortField == "" {
 		sortField = ItemSortFieldPublishedAt
@@ -271,7 +276,7 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item,
 	}
 	column, ok := orderColumn[sortField]
 	if !ok {
-		return nil, fmt.Errorf("store: invalid sort field %q", sortField)
+		return FilterItemsResult{}, fmt.Errorf("store: invalid sort field %q", sortField)
 	}
 
 	dirSQL := "DESC"
@@ -281,11 +286,11 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item,
 	case SortDirectionDesc:
 		dirSQL = "DESC"
 	default:
-		return nil, fmt.Errorf("store: invalid sort direction %q", sortDirection)
+		return FilterItemsResult{}, fmt.Errorf("store: invalid sort direction %q", sortDirection)
 	}
 
 	var builder strings.Builder
-	builder.WriteString("SELECT i.id, i.feed_id, f.title AS feed_title, i.guid, i.url, i.title, i.author, i.content_html, i.content_text, i.published_at, i.retrieved_at FROM items i JOIN feeds f ON f.id = i.feed_id")
+	builder.WriteString("SELECT i.id, i.feed_id, f.title AS feed_title, i.guid, i.url, i.title, i.author, i.content_html, i.content_text, i.published_at, i.retrieved_at, COUNT(*) OVER () AS total FROM items i JOIN feeds f ON f.id = i.feed_id")
 
 	args := make([]any, 0, len(arg.FeedIDs)+2)
 	placeholder := 1
@@ -294,7 +299,7 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item,
 		for _, id := range arg.FeedIDs {
 			parsed, err := uuid.Parse(id)
 			if err != nil {
-				return nil, err
+				return FilterItemsResult{}, err
 			}
 			ids = append(ids, parsed)
 		}
@@ -323,11 +328,12 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item,
 
 	rows, err := s.db.QueryContext(ctx, builder.String(), args...)
 	if err != nil {
-		return nil, err
+		return FilterItemsResult{}, err
 	}
 	defer rows.Close()
 
 	items := make([]Item, 0)
+	var total int64
 	for rows.Next() {
 		var (
 			id          uuid.UUID
@@ -341,17 +347,19 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) ([]Item,
 			contentText string
 			publishedAt sql.NullTime
 			retrievedAt time.Time
+			rowTotal    int64
 		)
-		if err := rows.Scan(&id, &feedID, &feedTitle, &guid, &url, &title, &author, &contentHTML, &contentText, &publishedAt, &retrievedAt); err != nil {
-			return nil, err
+		if err := rows.Scan(&id, &feedID, &feedTitle, &guid, &url, &title, &author, &contentHTML, &contentText, &publishedAt, &retrievedAt, &rowTotal); err != nil {
+			return FilterItemsResult{}, err
 		}
+		total = rowTotal
 		items = append(items, mapItem(id, feedID, feedTitle, guid, url, title, author, contentHTML, contentText, publishedAt, retrievedAt))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return FilterItemsResult{}, err
 	}
 
-	return items, nil
+	return FilterItemsResult{Items: items, Total: total}, nil
 }
 
 func mapFeed(f sqlc.Feed) Feed {
