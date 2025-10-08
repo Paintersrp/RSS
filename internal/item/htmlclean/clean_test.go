@@ -20,10 +20,10 @@ func TestCleanHTML(t *testing.T) {
 			max:   2048,
 			want:  "Visible text",
 		},
-		"preserves_inline_boundaries_without_spaces": {
+		"preserves_inline_boundaries_with_separator": {
 			input: `<strong>Hello</strong><em>world</em>`,
 			max:   2048,
-			want:  "Helloworld",
+			want:  "Hello world",
 		},
 		"decodes_entities_and_collapses_whitespace": {
 			input: "Hello\n\n&amp;nbsp;world\t!",
