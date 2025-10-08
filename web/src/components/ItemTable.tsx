@@ -18,6 +18,8 @@ import {
   useRecentItemsQuery,
   type RecentItemsQueryState,
   type RecentItemsSort,
+  type RecentItemsSortDirection,
+  type RecentItemsSortField,
 } from '@/lib/useRecentItemsQuery'
 
 function formatDate(value?: string | null) {
@@ -165,7 +167,7 @@ export default function ItemTable({
           </thead>
           <tbody className="divide-y divide-border">
             {showSkeleton ? (
-              Array.from({ length: pagination.pageSize }).map((_, index) => (
+              Array.from({ length: paginationState.pageSize }).map((_, index) => (
                 <tr key={`skeleton-${index}`} className="hover:bg-transparent">
                   <td colSpan={columns.length} className="px-4 py-3">
                     <Skeleton className="h-6 w-full" />
@@ -268,7 +270,7 @@ function SortableHeader({ column, label }: SortableHeaderProps) {
 }
 
 function convertSortToState(sort: RecentItemsSort): SortingState {
-  const [columnId, direction] = sort.split(':') as [string, string]
+  const [columnId, direction] = parseSort(sort)
   return [
     {
       id: columnId,
@@ -282,18 +284,41 @@ function handleSortingChange(
   currentSort: RecentItemsSort,
   onSortChange: (next: RecentItemsSort) => void,
 ) {
-  const nextState = typeof updater === 'function' ? updater(convertSortToState(currentSort)) : updater
+  const nextState =
+    typeof updater === 'function'
+      ? updater(convertSortToState(currentSort))
+      : updater
   const next = nextState[0]
+  const [currentField] = parseSort(currentSort)
   if (!next) {
-    if (currentSort !== 'published_at:desc') {
-      onSortChange('published_at:desc')
+    const fallback: RecentItemsSort = `${currentField}:desc`
+    if (currentSort !== fallback) {
+      onSortChange(fallback)
     }
     return
   }
-  const nextSort: RecentItemsSort = `published_at:${next.desc ? 'desc' : 'asc'}`
+  const nextField = isSortField(next.id) ? next.id : currentField
+  const nextDirection: RecentItemsSortDirection = next.desc ? 'desc' : 'asc'
+  const nextSort: RecentItemsSort = `${nextField}:${nextDirection}`
   if (nextSort !== currentSort) {
     onSortChange(nextSort)
   }
+}
+
+function parseSort(sort: RecentItemsSort): [RecentItemsSortField, RecentItemsSortDirection] {
+  const [field, direction] = sort.split(':') as [
+    RecentItemsSortField | undefined,
+    RecentItemsSortDirection | undefined,
+  ]
+  const safeField: RecentItemsSortField =
+    field && isSortField(field) ? field : 'published_at'
+  const safeDirection: RecentItemsSortDirection =
+    direction === 'asc' ? 'asc' : 'desc'
+  return [safeField, safeDirection]
+}
+
+function isSortField(value: unknown): value is RecentItemsSortField {
+  return value === 'published_at' || value === 'retrieved_at'
 }
 
 function handlePaginationChange(
