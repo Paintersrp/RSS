@@ -15,6 +15,11 @@ func TestCleanHTML(t *testing.T) {
 			max:   2048,
 			want:  "Hello world! Second line",
 		},
+		"ignores_style_blocks": {
+			input: `<style>body{color:red}</style><p>Visible <em>text</em></p>`,
+			max:   2048,
+			want:  "Visible text",
+		},
 		"decodes_entities_and_collapses_whitespace": {
 			input: "Hello\n\n&amp;nbsp;world\t!",
 			max:   2048,
@@ -25,10 +30,20 @@ func TestCleanHTML(t *testing.T) {
 			max:   2048,
 			want:  "Hello & welcome < invalid>",
 		},
+		"returns_empty_for_blank_input": {
+			input: "  \n\t  ",
+			max:   2048,
+			want:  "",
+		},
 		"truncates_to_max": {
 			input: `<p>` + longString(2100) + `</p>`,
 			max:   2000,
 			want:  longString(2000),
+		},
+		"defaults_max_when_non_positive": {
+			input: `<div>` + longString(defaultMaxLength+10) + `</div>`,
+			max:   0,
+			want:  longString(defaultMaxLength),
 		},
 	}
 
