@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -85,18 +86,48 @@ func NewServer(cfg Config) *echo.Echo {
 	e.GET("/items", func(c echo.Context) error {
 		limit := parseInt(c.QueryParam("limit"), 50)
 		offset := parseInt(c.QueryParam("offset"), 0)
-		feedID := c.QueryParam("feed_id")
-		ctx := c.Request().Context()
-
-		var (
-			items []store.Item
-			err   error
-		)
-		if feedID != "" {
-			items, err = cfg.Store.ListByFeed(ctx, feedID, int32(limit), int32(offset))
-		} else {
-			items, err = cfg.Store.ListRecent(ctx, store.ListRecentParams{Limit: int32(limit), Offset: int32(offset)})
+		feedIDs := c.QueryParams()["feed_id"]
+		sortParam := c.QueryParam("sort")
+		if sortParam == "" {
+			sortParam = "published_at:desc"
 		}
+
+		parts := strings.SplitN(sortParam, ":", 2)
+		if len(parts) != 2 {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid sort parameter")
+		}
+
+		field := strings.ToLower(strings.TrimSpace(parts[0]))
+		direction := strings.ToLower(strings.TrimSpace(parts[1]))
+
+		var sortField store.ItemSortField
+		switch field {
+		case string(store.ItemSortFieldPublishedAt):
+			sortField = store.ItemSortFieldPublishedAt
+		case string(store.ItemSortFieldRetrievedAt):
+			sortField = store.ItemSortFieldRetrievedAt
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid sort field")
+		}
+
+		var sortDirection store.SortDirection
+		switch direction {
+		case string(store.SortDirectionAsc):
+			sortDirection = store.SortDirectionAsc
+		case string(store.SortDirectionDesc):
+			sortDirection = store.SortDirectionDesc
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid sort direction")
+		}
+
+		ctx := c.Request().Context()
+		items, err := cfg.Store.FilterItems(ctx, store.FilterItemsParams{
+			FeedIDs:       feedIDs,
+			SortField:     sortField,
+			SortDirection: sortDirection,
+			Limit:         int32(limit),
+			Offset:        int32(offset),
+		})
 		if err != nil {
 			return err
 		}
