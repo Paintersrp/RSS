@@ -105,3 +105,25 @@ JOIN feeds f ON f.id = i.feed_id
 WHERE i.feed_id = $1
 ORDER BY i.published_at DESC NULLS LAST, i.retrieved_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListRecentFiltered :many
+SELECT i.id,
+       i.feed_id,
+       f.title AS feed_title,
+       i.guid,
+       i.url,
+       i.title,
+       i.author,
+       i.content_html,
+       i.content_text,
+       i.published_at,
+       i.retrieved_at
+FROM items i
+JOIN feeds f ON f.id = i.feed_id
+WHERE sqlc.narg(feed_ids)::uuid[] IS NULL
+   OR i.feed_id = ANY(sqlc.narg(feed_ids)::uuid[])
+ORDER BY CASE WHEN sqlc.arg(sort_direction)::text = 'asc' THEN i.published_at END ASC NULLS LAST,
+         CASE WHEN sqlc.arg(sort_direction)::text = 'desc' THEN i.published_at END DESC NULLS LAST,
+         i.retrieved_at DESC
+LIMIT sqlc.arg(result_limit)::int
+OFFSET sqlc.arg(result_offset)::int;
