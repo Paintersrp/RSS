@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 type Metrics struct {
@@ -18,9 +19,11 @@ type Metrics struct {
 }
 
 func NewMetrics(service string) *Metrics {
-	return &Metrics{
+	registry := prometheus.NewRegistry()
+
+	m := &Metrics{
 		service:  service,
-		gatherer: prometheus.DefaultGatherer,
+		gatherer: registry,
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "courier",
 			Subsystem: "http",
@@ -40,10 +43,16 @@ func NewMetrics(service string) *Metrics {
 			Help:      "Duration of external operations in seconds.",
 		}, []string{"service", "component", "method", "status"}),
 	}
-}
 
-func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.requestsTotal, m.requestDuration, m.externalLatency}
+	registry.MustRegister(
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+		m.requestsTotal,
+		m.requestDuration,
+		m.externalLatency,
+	)
+
+	return m
 }
 
 func (m *Metrics) Gatherer() prometheus.Gatherer {

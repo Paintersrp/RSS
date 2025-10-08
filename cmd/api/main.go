@@ -11,7 +11,6 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"courier/internal/httpx"
 	"courier/internal/logx"
@@ -25,7 +24,6 @@ func main() {
 	meiliURL := requireEnv(svc, "MEILI_URL")
 
 	metrics := httpx.NewMetrics(svc)
-	prometheus.MustRegister(metrics.Collectors()...)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
