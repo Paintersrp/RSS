@@ -20,12 +20,18 @@ var (
 type Store struct {
 	db      *sql.DB
 	queries *sqlc.Queries
+	metrics Metrics
 }
 
-func New(db *sql.DB) *Store {
+type Metrics interface {
+	ObserveDB(method string, err error, duration time.Duration)
+}
+
+func New(db *sql.DB, metrics Metrics) *Store {
 	return &Store{
 		db:      db,
 		queries: sqlc.New(db),
+		metrics: metrics,
 	}
 }
 
@@ -66,27 +72,40 @@ type Feed struct {
 	Active       bool           `json:"active"`
 }
 
-func (s *Store) InsertFeed(ctx context.Context, url string) (Feed, error) {
-	feed, err := s.queries.InsertFeed(ctx, url)
+func (s *Store) InsertFeed(ctx context.Context, url string) (feed Feed, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("InsertFeed", err, time.Since(start))
+		}(time.Now())
+	}
+
+	row, err := s.queries.InsertFeed(ctx, url)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Feed{}, ErrFeedExists
+			err = ErrFeedExists
 		}
 		return Feed{}, err
 	}
-	return mapFeed(feed), nil
+	feed = mapFeed(row)
+	return feed, nil
 }
 
-func (s *Store) ListFeeds(ctx context.Context, active bool) ([]Feed, error) {
-	feeds, err := s.queries.ListFeeds(ctx, active)
+func (s *Store) ListFeeds(ctx context.Context, active bool) (feeds []Feed, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("ListFeeds", err, time.Since(start))
+		}(time.Now())
+	}
+
+	rows, err := s.queries.ListFeeds(ctx, active)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Feed, 0, len(feeds))
-	for _, f := range feeds {
-		result = append(result, mapFeed(f))
+	feeds = make([]Feed, 0, len(rows))
+	for _, f := range rows {
+		feeds = append(feeds, mapFeed(f))
 	}
-	return result, nil
+	return feeds, nil
 }
 
 type UpdateFeedCrawlStateParams struct {
@@ -97,13 +116,21 @@ type UpdateFeedCrawlStateParams struct {
 	Title        string
 }
 
-func (s *Store) UpdateFeedCrawlState(ctx context.Context, arg UpdateFeedCrawlStateParams) (Feed, error) {
-	feedID, err := uuid.Parse(arg.ID)
+func (s *Store) UpdateFeedCrawlState(ctx context.Context, arg UpdateFeedCrawlStateParams) (feed Feed, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("UpdateFeedCrawlState", err, time.Since(start))
+		}(time.Now())
+	}
+
+	var feedID uuid.UUID
+	feedID, err = uuid.Parse(arg.ID)
 	if err != nil {
 		return Feed{}, err
 	}
 
-	updated, err := s.queries.UpdateFeedCrawlState(ctx, sqlc.UpdateFeedCrawlStateParams{
+	var updated sqlc.Feed
+	updated, err = s.queries.UpdateFeedCrawlState(ctx, sqlc.UpdateFeedCrawlStateParams{
 		ID:           feedID,
 		Etag:         arg.ETag,
 		LastModified: arg.LastModified,
@@ -113,7 +140,8 @@ func (s *Store) UpdateFeedCrawlState(ctx context.Context, arg UpdateFeedCrawlSta
 	if err != nil {
 		return Feed{}, err
 	}
-	return mapFeed(updated), nil
+	feed = mapFeed(updated)
+	return feed, nil
 }
 
 type Item struct {
@@ -149,13 +177,21 @@ type UpsertItemResult struct {
 	Indexed bool
 }
 
-func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertItemResult, error) {
-	feedID, err := uuid.Parse(arg.FeedID)
+func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (result UpsertItemResult, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("UpsertItem", err, time.Since(start))
+		}(time.Now())
+	}
+
+	var feedID uuid.UUID
+	feedID, err = uuid.Parse(arg.FeedID)
 	if err != nil {
 		return UpsertItemResult{}, err
 	}
 
-	row, err := s.queries.UpsertItem(ctx, sqlc.UpsertItemParams{
+	var row sqlc.UpsertItemRow
+	row, err = s.queries.UpsertItem(ctx, sqlc.UpsertItemParams{
 		FeedID:      feedID,
 		Guid:        arg.GUID,
 		Url:         arg.URL,
@@ -175,7 +211,8 @@ func (s *Store) UpsertItem(ctx context.Context, arg UpsertItemParams) (UpsertIte
 
 	indexed := row.Indexed.Valid && row.Indexed.Bool
 
-	return UpsertItemResult{Item: item, Fresh: row.Inserted, Indexed: indexed}, nil
+	result = UpsertItemResult{Item: item, Fresh: row.Inserted, Indexed: indexed}
+	return result, nil
 }
 
 type ListRecentParams struct {
@@ -183,8 +220,15 @@ type ListRecentParams struct {
 	Offset int32
 }
 
-func (s *Store) ListRecent(ctx context.Context, arg ListRecentParams) ([]Item, error) {
-	rows, err := s.queries.ListRecent(ctx, sqlc.ListRecentParams{
+func (s *Store) ListRecent(ctx context.Context, arg ListRecentParams) (items []Item, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("ListRecent", err, time.Since(start))
+		}(time.Now())
+	}
+
+	var rows []sqlc.ListRecentRow
+	rows, err = s.queries.ListRecent(ctx, sqlc.ListRecentParams{
 		Limit:  arg.Limit,
 		Offset: arg.Offset,
 	})
@@ -192,36 +236,43 @@ func (s *Store) ListRecent(ctx context.Context, arg ListRecentParams) ([]Item, e
 		return nil, err
 	}
 
-	items := make([]Item, 0, len(rows))
+	items = make([]Item, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
 	}
 	return items, nil
 }
 
-func (s *Store) ListRecentFiltered(ctx context.Context, feedIDs []string, direction SortDirection, limit, offset int32) ([]Item, error) {
+func (s *Store) ListRecentFiltered(ctx context.Context, feedIDs []string, direction SortDirection, limit, offset int32) (items []Item, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("ListRecentFiltered", err, time.Since(start))
+		}(time.Now())
+	}
+
 	sortDirection := direction
 	if sortDirection == "" {
 		sortDirection = SortDirectionDesc
 	}
 
 	if sortDirection != SortDirectionAsc && sortDirection != SortDirectionDesc {
-		return nil, fmt.Errorf("store: invalid sort direction %q", sortDirection)
+		err = fmt.Errorf("store: invalid sort direction %q", sortDirection)
+		return nil, err
 	}
 
 	var parsedIDs []uuid.UUID
 	if len(feedIDs) > 0 {
 		parsedIDs = make([]uuid.UUID, len(feedIDs))
 		for i, id := range feedIDs {
-			parsed, err := uuid.Parse(id)
+			parsedIDs[i], err = uuid.Parse(id)
 			if err != nil {
 				return nil, err
 			}
-			parsedIDs[i] = parsed
 		}
 	}
 
-	rows, err := s.queries.ListRecentFiltered(ctx, sqlc.ListRecentFilteredParams{
+	var rows []sqlc.ListRecentFilteredRow
+	rows, err = s.queries.ListRecentFiltered(ctx, sqlc.ListRecentFilteredParams{
 		FeedIds:       parsedIDs,
 		SortDirection: string(sortDirection),
 		ResultLimit:   limit,
@@ -231,20 +282,28 @@ func (s *Store) ListRecentFiltered(ctx context.Context, feedIDs []string, direct
 		return nil, err
 	}
 
-	items := make([]Item, 0, len(rows))
+	items = make([]Item, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
 	}
 	return items, nil
 }
 
-func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int32) ([]Item, error) {
-	id, err := uuid.Parse(feedID)
+func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int32) (items []Item, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("ListByFeed", err, time.Since(start))
+		}(time.Now())
+	}
+
+	var id uuid.UUID
+	id, err = uuid.Parse(feedID)
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := s.queries.ListByFeed(ctx, sqlc.ListByFeedParams{
+	var rows []sqlc.ListByFeedRow
+	rows, err = s.queries.ListByFeed(ctx, sqlc.ListByFeedParams{
 		FeedID: id,
 		Limit:  limit,
 		Offset: offset,
@@ -253,14 +312,20 @@ func (s *Store) ListByFeed(ctx context.Context, feedID string, limit, offset int
 		return nil, err
 	}
 
-	items := make([]Item, 0, len(rows))
+	items = make([]Item, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, mapItem(row.ID, row.FeedID, row.FeedTitle, row.Guid, row.Url, row.Title, row.Author, row.ContentHtml, row.ContentText, row.PublishedAt, row.RetrievedAt))
 	}
 	return items, nil
 }
 
-func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterItemsResult, error) {
+func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (result FilterItemsResult, err error) {
+	if s.metrics != nil {
+		defer func(start time.Time) {
+			s.metrics.ObserveDB("FilterItems", err, time.Since(start))
+		}(time.Now())
+	}
+
 	sortField := arg.SortField
 	if sortField == "" {
 		sortField = ItemSortFieldPublishedAt
@@ -276,7 +341,8 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterI
 	}
 	column, ok := orderColumn[sortField]
 	if !ok {
-		return FilterItemsResult{}, fmt.Errorf("store: invalid sort field %q", sortField)
+		err = fmt.Errorf("store: invalid sort field %q", sortField)
+		return FilterItemsResult{}, err
 	}
 
 	dirSQL := "DESC"
@@ -286,7 +352,8 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterI
 	case SortDirectionDesc:
 		dirSQL = "DESC"
 	default:
-		return FilterItemsResult{}, fmt.Errorf("store: invalid sort direction %q", sortDirection)
+		err = fmt.Errorf("store: invalid sort direction %q", sortDirection)
+		return FilterItemsResult{}, err
 	}
 
 	var builder strings.Builder
@@ -297,7 +364,8 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterI
 	if len(arg.FeedIDs) > 0 {
 		ids := make([]uuid.UUID, 0, len(arg.FeedIDs))
 		for _, id := range arg.FeedIDs {
-			parsed, err := uuid.Parse(id)
+			var parsed uuid.UUID
+			parsed, err = uuid.Parse(id)
 			if err != nil {
 				return FilterItemsResult{}, err
 			}
@@ -349,17 +417,18 @@ func (s *Store) FilterItems(ctx context.Context, arg FilterItemsParams) (FilterI
 			retrievedAt time.Time
 			rowTotal    int64
 		)
-		if err := rows.Scan(&id, &feedID, &feedTitle, &guid, &url, &title, &author, &contentHTML, &contentText, &publishedAt, &retrievedAt, &rowTotal); err != nil {
+		if err = rows.Scan(&id, &feedID, &feedTitle, &guid, &url, &title, &author, &contentHTML, &contentText, &publishedAt, &retrievedAt, &rowTotal); err != nil {
 			return FilterItemsResult{}, err
 		}
 		total = rowTotal
 		items = append(items, mapItem(id, feedID, feedTitle, guid, url, title, author, contentHTML, contentText, publishedAt, retrievedAt))
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return FilterItemsResult{}, err
 	}
 
-	return FilterItemsResult{Items: items, Total: total}, nil
+	result = FilterItemsResult{Items: items, Total: total}
+	return result, nil
 }
 
 func mapFeed(f sqlc.Feed) Feed {
