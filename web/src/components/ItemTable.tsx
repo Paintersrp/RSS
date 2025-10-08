@@ -1,22 +1,24 @@
-import { useQuery } from '@tanstack/react-query'
 import {
   flexRender,
   getCoreRowModel,
   useReactTable,
   type Column,
   type ColumnDef,
-  type ColumnFiltersState,
   type PaginationState,
   type SortingState,
+  type Updater,
 } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpDown, ExternalLink } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { Item } from '@/lib/api'
-import { listRecentItems } from '@/lib/api'
-import { queryKeys } from '@/lib/query'
+import {
+  useRecentItemsQuery,
+  type RecentItemsQueryState,
+  type RecentItemsSort,
+} from '@/lib/useRecentItemsQuery'
 
 function formatDate(value?: string | null) {
   if (!value) {
@@ -84,113 +86,60 @@ const columns: ColumnDef<Item>[] = [
 const DEFAULT_PAGE_SIZE = 20
 
 interface ItemTableProps {
-  feedId?: string
+  feeds: string[]
+  sort: RecentItemsSort
+  page: number
   pageSize?: number
+  onPageChange: (page: number) => void
+  onSortChange: (sort: RecentItemsSort) => void
 }
 
-export default function ItemTable({ feedId, pageSize = DEFAULT_PAGE_SIZE }: ItemTableProps) {
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: 'published_at', desc: true },
-  ])
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize,
-  })
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() =>
-    feedId ? [{ id: 'feed_id', value: [feedId] }] : [],
-  )
+export default function ItemTable({
+  feeds,
+  sort,
+  page,
+  pageSize = DEFAULT_PAGE_SIZE,
+  onPageChange,
+  onSortChange,
+}: ItemTableProps) {
+  const queryState: RecentItemsQueryState = {
+    feeds,
+    sort,
+    page,
+    limit: pageSize,
+  }
 
-  useEffect(() => {
-    setPagination((prev) => {
-      if (prev.pageSize === pageSize) {
-        return prev
-      }
-      return { pageIndex: 0, pageSize }
-    })
-  }, [pageSize])
-
-  useEffect(() => {
-    setColumnFilters((current) => {
-      const existing = current.find((filter) => filter.id === 'feed_id')
-      const nextValue = feedId ? [feedId] : []
-
-      if (feedId) {
-        if (
-          existing &&
-          Array.isArray(existing.value) &&
-          arraysEqual(existing.value as string[], nextValue)
-        ) {
-          return current
-        }
-        return [
-          ...current.filter((filter) => filter.id !== 'feed_id'),
-          { id: 'feed_id', value: nextValue },
-        ]
-      }
-
-      if (!existing) {
-        return current
-      }
-
-      return current.filter((filter) => filter.id !== 'feed_id')
-    })
-  }, [feedId])
-
-  useEffect(() => {
-    setPagination((prev) => {
-      if (prev.pageIndex === 0) {
-        return prev
-      }
-      return { ...prev, pageIndex: 0 }
-    })
-  }, [sorting, columnFilters])
-
-  const feedFilter = columnFilters.find((filter) => filter.id === 'feed_id')
-  const feedIds = normalizeFilterValue(feedFilter?.value)
-  const sortedFeedIds = [...feedIds].sort()
-  const effectiveFeedIds = sortedFeedIds.length > 0 ? sortedFeedIds : undefined
-  const sortState = sorting[0]
-  const sortParam = sortState
-    ? `${sortState.id}:${sortState.desc ? 'desc' : 'asc'}`
-    : undefined
-  const limit = pagination.pageSize
-  const offset = pagination.pageIndex * pagination.pageSize
-
-  const itemsQuery = useQuery({
-    queryKey: queryKeys.recentItems({
-      limit,
-      offset,
-      sort: sortParam,
-      feed_id: effectiveFeedIds,
-    }),
-    queryFn: () =>
-      listRecentItems({
-        limit,
-        offset,
-        sort: sortParam,
-        feed_id: effectiveFeedIds,
-      }),
-    keepPreviousData: false,
-  })
+  const itemsQuery = useRecentItemsQuery(queryState, { keepPreviousData: true })
 
   const items = itemsQuery.data?.items ?? []
   const total = itemsQuery.data?.total ?? 0
-  const pageCount = limit > 0 ? Math.ceil(total / limit) : 0
+  const pageCount = pageSize > 0 ? Math.ceil(total / pageSize) : 0
   const rowCount = total
   const showSkeleton = itemsQuery.isLoading || itemsQuery.isFetching
+
+  const sortingState = useMemo<SortingState>(() => convertSortToState(sort), [sort])
+  const paginationState = useMemo<PaginationState>(
+    () => ({ pageIndex: Math.max(page - 1, 0), pageSize }),
+    [page, pageSize],
+  )
+  const columnFilters = useMemo(() => {
+    return feeds.length > 0
+      ? [{ id: 'feed_id', value: [...feeds].filter(Boolean) }]
+      : []
+  }, [feeds])
 
   const table = useReactTable({
     data: items,
     columns,
     getCoreRowModel: getCoreRowModel(),
-    state: { sorting, pagination, columnFilters },
-    onSortingChange: setSorting,
-    onPaginationChange: setPagination,
-    onColumnFiltersChange: setColumnFilters,
+    state: { sorting: sortingState, pagination: paginationState, columnFilters },
     manualSorting: true,
     manualPagination: true,
     manualFiltering: true,
     pageCount,
+    onSortingChange: (updater) => handleSortingChange(updater, sort, onSortChange),
+    onPaginationChange: (updater) =>
+      handlePaginationChange(updater, paginationState, page, onPageChange),
   })
 
   return (
@@ -251,23 +200,31 @@ export default function ItemTable({ feedId, pageSize = DEFAULT_PAGE_SIZE }: Item
           {showSkeleton
             ? 'Loading items…'
             : `Showing ${
-                items.length > 0 ? `${offset + 1}-${offset + items.length}` : 0
+                items.length > 0
+                  ? `${paginationState.pageIndex * paginationState.pageSize + 1}-${
+                      paginationState.pageIndex * paginationState.pageSize + items.length
+                    }`
+                  : 0
               } of ${rowCount} items`}
         </p>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
-            onClick={() => table.previousPage()}
+            onClick={() =>
+              table.previousPage()
+            }
             disabled={!table.getCanPreviousPage() || showSkeleton}
           >
             Previous
           </Button>
           <span className="text-xs text-muted-foreground">
-            Page {pagination.pageIndex + 1} of {Math.max(pageCount, 1)}
+            Page {paginationState.pageIndex + 1} of {Math.max(pageCount, 1)}
           </span>
           <Button
             variant="outline"
-            onClick={() => table.nextPage()}
+            onClick={() =>
+              table.nextPage()
+            }
             disabled={!table.getCanNextPage() || showSkeleton}
           >
             Next
@@ -310,19 +267,44 @@ function SortableHeader({ column, label }: SortableHeaderProps) {
   )
 }
 
-function normalizeFilterValue(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
-  }
-  if (typeof value === 'string' && value.length > 0) {
-    return [value]
-  }
-  return []
+function convertSortToState(sort: RecentItemsSort): SortingState {
+  const [columnId, direction] = sort.split(':') as [string, string]
+  return [
+    {
+      id: columnId,
+      desc: direction !== 'asc',
+    },
+  ]
 }
 
-function arraysEqual(a: string[], b: string[]) {
-  if (a.length !== b.length) {
-    return false
+function handleSortingChange(
+  updater: Updater<SortingState>,
+  currentSort: RecentItemsSort,
+  onSortChange: (next: RecentItemsSort) => void,
+) {
+  const nextState = typeof updater === 'function' ? updater(convertSortToState(currentSort)) : updater
+  const next = nextState[0]
+  if (!next) {
+    if (currentSort !== 'published_at:desc') {
+      onSortChange('published_at:desc')
+    }
+    return
   }
-  return a.every((value, index) => value === b[index])
+  const nextSort: RecentItemsSort = `published_at:${next.desc ? 'desc' : 'asc'}`
+  if (nextSort !== currentSort) {
+    onSortChange(nextSort)
+  }
+}
+
+function handlePaginationChange(
+  updater: Updater<PaginationState>,
+  current: PaginationState,
+  currentPage: number,
+  onPageChange: (nextPage: number) => void,
+) {
+  const next = typeof updater === 'function' ? updater(current) : updater
+  const nextPage = next.pageIndex + 1
+  if (nextPage !== currentPage) {
+    onPageChange(nextPage)
+  }
 }
