@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/select'
 import { listFeeds, searchItems } from '@/lib/api'
 import { queryKeys } from '@/lib/query'
+import { parsePage } from '@/lib/parsePage'
 
 const PAGE_SIZE = 20
 const SAVED_SEARCHES = [
@@ -31,7 +32,7 @@ const SAVED_SEARCHES = [
 export const Route = createFileRoute('/search')({
   validateSearch: (search) => ({
     q: typeof search.q === 'string' ? search.q : '',
-    page: typeof search.page === 'number' && search.page > 0 ? search.page : 1,
+    page: parsePage(search.page),
     feed: typeof search.feed === 'string' ? search.feed : '',
     startDate: typeof search.startDate === 'string' ? search.startDate : undefined,
     endDate: typeof search.endDate === 'string' ? search.endDate : undefined,
