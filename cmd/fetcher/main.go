@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -30,6 +31,15 @@ func main() {
 		}
 	}
 
+	batchSize := 250
+	if v := os.Getenv("COURIER_BATCH_UPSERT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			fatal(svc, "invalid batch size", fmt.Errorf("COURIER_BATCH_UPSERT must be a positive integer"), map[string]any{"env": "COURIER_BATCH_UPSERT"})
+		}
+		batchSize = n
+	}
+
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		fatal(svc, "open db", err, nil)
@@ -50,14 +60,14 @@ func main() {
 	fetcher := feed.NewFetcher()
 	backoffs := newBackoffTracker()
 
-	logx.Info(svc, "ready", map[string]any{"every": every.String()})
+	logx.Info(svc, "ready", map[string]any{"every": every.String(), "batch_size": batchSize})
 
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), every)
-		run(ctx, svc, repo, searchClient, fetcher, backoffs)
+		run(ctx, svc, repo, searchClient, fetcher, backoffs, batchSize)
 		cancel()
 		<-ticker.C
 	}
@@ -76,7 +86,7 @@ func requireEnv(service, key string) string {
 	return value
 }
 
-func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker) {
+func run(ctx context.Context, svc string, repo *store.Store, searchClient *search.Client, fetcher *feed.Fetcher, backoffs *backoffTracker, batchSize int) {
 	logx.Info(svc, "crawl tick", nil)
 
 	feeds, err := repo.ListFeeds(ctx, true)
@@ -85,8 +95,36 @@ func run(ctx context.Context, svc string, repo *store.Store, searchClient *searc
 		return
 	}
 
+	pendingDocs := make([]search.Document, 0, batchSize)
+	flushFailed := false
+
 	for _, f := range feeds {
-		result := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
+		result, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
+
+		if len(docs) > 0 {
+			pendingDocs = append(pendingDocs, docs...)
+		}
+
+		if !flushFailed && len(pendingDocs) >= batchSize {
+			for len(pendingDocs) >= batchSize {
+				chunk := pendingDocs[:batchSize]
+				logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
+				if err := searchClient.UpsertBatch(ctx, chunk); err != nil {
+					flushFailed = true
+					logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(chunk)})
+					if result.Err != nil {
+						result.Err = errors.Join(result.Err, err)
+					} else {
+						result.Err = err
+					}
+					if result.Reason == "" {
+						result.Reason = "search upsert"
+					}
+					break
+				}
+				pendingDocs = pendingDocs[batchSize:]
+			}
+		}
 
 		extra := map[string]any{
 			"feed":    f.URL,
@@ -119,6 +157,13 @@ func run(ctx context.Context, svc string, repo *store.Store, searchClient *searc
 			logx.Info(svc, "feed processed", extra)
 		}
 	}
+
+	if !flushFailed && len(pendingDocs) > 0 {
+		logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(pendingDocs)})
+		if err := searchClient.UpsertBatch(ctx, pendingDocs); err != nil {
+			logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(pendingDocs)})
+		}
+	}
 }
 
 type feedStore interface {
@@ -132,6 +177,7 @@ type feedFetcher interface {
 
 type documentIndexer interface {
 	UpsertDocuments(ctx context.Context, docs []search.Document) error
+	UpsertBatch(ctx context.Context, docs []search.Document) error
 }
 
 type FetchFeedResult struct {
@@ -148,7 +194,7 @@ type FetchFeedResult struct {
 
 var ErrBackoffActive = errors.New("backoff active")
 
-func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) FetchFeedResult {
+func FetchFeed(ctx context.Context, repo feedStore, _ documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) (FetchFeedResult, []search.Document) {
 	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 
 	now := time.Now().UTC()
@@ -157,7 +203,7 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 		result.RetryIn = wait
 		result.Skipped = true
 		result.Reason = "backoff active"
-		return result
+		return result, nil
 	}
 
 	etag := ""
@@ -180,7 +226,7 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 		} else {
 			result.Reason = "fetch failed"
 		}
-		return result
+		return result, nil
 	}
 
 	backoffs.Reset(f.ID)
@@ -188,13 +234,13 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 	if res.Status == http.StatusNotModified {
 		result.Skipped = true
 		result.Reason = "not modified"
-		return result
+		return result, nil
 	}
 
 	if res.Feed == nil {
 		result.Skipped = true
 		result.Reason = "no content"
-		return result
+		return result, nil
 	}
 
 	updateTime := time.Now().UTC()
@@ -212,7 +258,7 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 	}); err != nil {
 		result.Err = err
 		result.Reason = "update feed"
-		return result
+		return result, nil
 	}
 
 	result.Mutated = true
@@ -250,13 +296,7 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 	}
 
 	result.Items = len(docs)
-	if err := searchClient.UpsertDocuments(ctx, docs); err != nil {
-		result.Err = err
-		result.Reason = "search upsert"
-		return result
-	}
-
-	return result
+	return result, docs
 }
 
 func sqlNullString(v string) sql.NullString {
