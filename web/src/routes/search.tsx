@@ -1,9 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { DateRange } from 'react-day-picker'
 
 import ItemCard from '@/components/ItemCard'
 import { Button } from '@/components/ui/button'
+import { DateRangePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -30,18 +32,37 @@ export const Route = createFileRoute('/search')({
     q: typeof search.q === 'string' ? search.q : '',
     page: typeof search.page === 'number' && search.page > 0 ? search.page : 1,
     feed: typeof search.feed === 'string' ? search.feed : '',
+    startDate: typeof search.startDate === 'string' ? search.startDate : undefined,
+    endDate: typeof search.endDate === 'string' ? search.endDate : undefined,
   }),
   component: SearchRoute,
 })
 
 function SearchRoute() {
-  const { q, page, feed } = Route.useSearch()
+  const { q, page, feed, startDate, endDate } = Route.useSearch()
   const navigate = Route.useNavigate()
   const [term, setTerm] = useState(q)
   const [debouncedTerm, setDebouncedTerm] = useState(q)
   const [debounceSignal, setDebounceSignal] = useState(0)
   const offset = useMemo(() => (Math.max(1, page) - 1) * PAGE_SIZE, [page])
   const isFirstDebounce = useRef(true)
+  const safeParseDate = useCallback((value?: string) => {
+    if (!value) {
+      return undefined
+    }
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed
+  }, [])
+  const [selectedRange, setSelectedRange] = useState<DateRange | undefined>(() => {
+    const from = safeParseDate(startDate)
+    const to = safeParseDate(endDate)
+    if (!from && !to) {
+      return undefined
+    }
+    return { from, to }
+  })
+  const selectedFromISO = selectedRange?.from?.toISOString() ?? ''
+  const selectedToISO = selectedRange?.to?.toISOString() ?? ''
 
   const commitTerm = useCallback((value: string) => {
     setDebouncedTerm(value)
@@ -51,6 +72,21 @@ function SearchRoute() {
   useEffect(() => {
     setTerm(q)
   }, [q])
+
+  useEffect(() => {
+    const from = safeParseDate(startDate)
+    const to = safeParseDate(endDate)
+    const fromISO = from?.toISOString() ?? ''
+    const toISO = to?.toISOString() ?? ''
+
+    if (selectedFromISO !== fromISO || selectedToISO !== toISO) {
+      if (!from && !to) {
+        setSelectedRange(undefined)
+      } else {
+        setSelectedRange({ from, to })
+      }
+    }
+  }, [endDate, safeParseDate, selectedFromISO, selectedToISO, startDate])
 
   useEffect(() => {
     if (term === debouncedTerm) {
@@ -75,8 +111,16 @@ function SearchRoute() {
     const next = debouncedTerm.trim()
 
     if (next.length === 0) {
-      if (q !== '' || page !== 1 || feed !== '') {
-        void navigate({ search: { q: '', page: 1, feed: '' } })
+      if (q !== '' || page !== 1 || feed !== '' || startDate || endDate) {
+        void navigate({
+          search: {
+            q: '',
+            page: 1,
+            feed: '',
+            startDate,
+            endDate,
+          },
+        })
       }
       return
     }
@@ -86,9 +130,9 @@ function SearchRoute() {
     }
 
     void navigate({
-      search: { q: next, page: 1, feed },
+      search: { q: next, page: 1, feed, startDate, endDate },
     })
-  }, [debouncedTerm, debounceSignal, feed, navigate, page, q])
+  }, [debouncedTerm, debounceSignal, endDate, feed, navigate, page, q, startDate])
 
   const feedsQuery = useQuery({
     queryKey: queryKeys.feeds(),
@@ -96,18 +140,25 @@ function SearchRoute() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const startDateISO = startDate ?? undefined
+  const endDateISO = endDate ?? undefined
+
   const query = useQuery({
     queryKey: queryKeys.search({
       query: q,
       limit: PAGE_SIZE,
       offset,
       feed_id: feed || undefined,
+      startDate: startDateISO,
+      endDate: endDateISO,
     }),
     queryFn: () => searchItems({
       query: q,
       limit: PAGE_SIZE,
       offset,
       feed_id: feed || undefined,
+      startDate: startDateISO,
+      endDate: endDateISO,
     }),
     enabled: q.trim().length > 0,
     keepPreviousData: true,
@@ -122,7 +173,7 @@ function SearchRoute() {
 
   const goToPage = (nextPage: number) => {
     void navigate({
-      search: { q, page: nextPage, feed },
+      search: { q, page: nextPage, feed, startDate, endDate },
     })
   }
 
@@ -134,6 +185,20 @@ function SearchRoute() {
   const feeds = feedsQuery.data ?? []
   const activeFeed = feed ? feeds.find((f) => f.id === feed) : undefined
   const feedSelection = feed || 'all'
+  const hasDateRange = Boolean(selectedRange?.from || selectedRange?.to)
+
+  const handleDateRangeChange = (range: DateRange | undefined) => {
+    setSelectedRange(range)
+    void navigate({
+      search: {
+        q,
+        page: 1,
+        feed,
+        startDate: range?.from ? range.from.toISOString() : undefined,
+        endDate: range?.to ? range.to.toISOString() : undefined,
+      },
+    })
+  }
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-10 px-4 py-10">
@@ -189,28 +254,47 @@ function SearchRoute() {
               ))}
             </div>
           </div>
-          <Select
-            value={feedSelection}
-            onValueChange={(value) => {
-              const nextFeed = value === 'all' ? '' : value
-              void navigate({
-                search: { q, page: 1, feed: nextFeed },
-              })
-            }}
-            disabled={feedsQuery.isLoading}
-          >
-            <SelectTrigger className="w-[220px]">
-              <SelectValue placeholder="All feeds" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All feeds</SelectItem>
-              {feeds.map((f) => (
-                <SelectItem key={f.id} value={f.id}>
-                  {f.title || f.url}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+            <div className="flex items-center gap-2">
+              <DateRangePicker
+                value={selectedRange}
+                onChange={handleDateRangeChange}
+                placeholder="Any time"
+              />
+              {hasDateRange && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDateRangeChange(undefined)}
+                >
+                  Clear dates
+                </Button>
+              )}
+            </div>
+            <Select
+              value={feedSelection}
+              onValueChange={(value) => {
+                const nextFeed = value === 'all' ? '' : value
+                void navigate({
+                  search: { q, page: 1, feed: nextFeed, startDate, endDate },
+                })
+              }}
+              disabled={feedsQuery.isLoading}
+            >
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="All feeds" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All feeds</SelectItem>
+                {feeds.map((f) => (
+                  <SelectItem key={f.id} value={f.id}>
+                    {f.title || f.url}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {!hasQuery ? (

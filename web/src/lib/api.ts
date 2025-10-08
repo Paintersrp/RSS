@@ -116,6 +116,8 @@ export interface SearchItemsParams {
   limit?: number
   offset?: number
   feed_id?: string
+  startDate?: string
+  endDate?: string
 }
 
 export async function searchItems({
@@ -123,6 +125,8 @@ export async function searchItems({
   limit = 20,
   offset = 0,
   feed_id,
+  startDate,
+  endDate,
 }: SearchItemsParams): Promise<SearchResponse> {
   const searchParams = new URLSearchParams()
   searchParams.set('q', query)
@@ -134,6 +138,12 @@ export async function searchItems({
   }
   if (feed_id) {
     searchParams.set('feed_id', feed_id)
+  }
+  if (startDate) {
+    searchParams.set('start_date', startDate)
+  }
+  if (endDate) {
+    searchParams.set('end_date', endDate)
   }
   return api.get('search', { searchParams }).json<SearchResponse>()
 }
