@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import ItemCard from '@/components/ItemCard'
 import { Button } from '@/components/ui/button'
@@ -38,11 +38,57 @@ function SearchRoute() {
   const { q, page, feed } = Route.useSearch()
   const navigate = Route.useNavigate()
   const [term, setTerm] = useState(q)
+  const [debouncedTerm, setDebouncedTerm] = useState(q)
+  const [debounceSignal, setDebounceSignal] = useState(0)
   const offset = useMemo(() => (Math.max(1, page) - 1) * PAGE_SIZE, [page])
+  const isFirstDebounce = useRef(true)
+
+  const commitTerm = useCallback((value: string) => {
+    setDebouncedTerm(value)
+    setDebounceSignal((signal) => signal + 1)
+  }, [])
 
   useEffect(() => {
     setTerm(q)
   }, [q])
+
+  useEffect(() => {
+    if (term === debouncedTerm) {
+      return
+    }
+
+    const handler = window.setTimeout(() => {
+      commitTerm(term)
+    }, 300)
+
+    return () => {
+      window.clearTimeout(handler)
+    }
+  }, [commitTerm, debouncedTerm, term])
+
+  useEffect(() => {
+    if (isFirstDebounce.current) {
+      isFirstDebounce.current = false
+      return
+    }
+
+    const next = debouncedTerm.trim()
+
+    if (next.length === 0) {
+      if (q !== '' || page !== 1 || feed !== '') {
+        void navigate({ search: { q: '', page: 1, feed: '' } })
+      }
+      return
+    }
+
+    if (next === q && page === 1) {
+      return
+    }
+
+    void navigate({
+      search: { q: next, page: 1, feed },
+    })
+  }, [debouncedTerm, debounceSignal, feed, navigate, page, q])
 
   const feedsQuery = useQuery({
     queryKey: queryKeys.feeds(),
@@ -70,9 +116,8 @@ function SearchRoute() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const next = term.trim()
-    void navigate({
-      search: { q: next, page: 1, feed },
-    })
+    setTerm(next)
+    commitTerm(next)
   }
 
   const goToPage = (nextPage: number) => {
@@ -116,7 +161,7 @@ function SearchRoute() {
                 variant="ghost"
                 onClick={() => {
                   setTerm('')
-                  void navigate({ search: { q: '', page: 1, feed: '' } })
+                  commitTerm('')
                 }}
               >
                 Clear
@@ -135,9 +180,8 @@ function SearchRoute() {
                   size="sm"
                   variant={q.toLowerCase() === item.query.toLowerCase() ? 'default' : 'outline'}
                   onClick={() => {
-                    void navigate({
-                      search: { q: item.query, page: 1, feed },
-                    })
+                    setTerm(item.query)
+                    commitTerm(item.query)
                   }}
                 >
                   {item.label}
