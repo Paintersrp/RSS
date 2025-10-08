@@ -10,13 +10,13 @@ func TestNormalize(t *testing.T) {
 	}{
 		{
 			name: "mixed case scheme and host with tracking",
-			in:   " HTTPS://Example.COM:443/posts/Go/?utm_source=rss&utm_medium=feed&ref=keep#fragment ",
+			in:   " HTTPS://Example.COM:443/posts/Go/?utm_source=rss&utm_medium=feed&ref=keep#gclid ",
 			want: "https://example.com/posts/Go?ref=keep",
 		},
 		{
-			name: "strips leading www and preserves root path",
+			name: "strips leading www and root slash",
 			in:   "https://www.Example.com/",
-			want: "https://example.com/",
+			want: "https://example.com",
 		},
 		{
 			name: "removes default port",
@@ -29,14 +29,24 @@ func TestNormalize(t *testing.T) {
 			want: "https://example.com:8443/path",
 		},
 		{
-			name: "drops trailing slash on non root path",
-			in:   "https://example.com/foo/bar/",
-			want: "https://example.com/foo/bar",
+			name: "drops trailing slash before query",
+			in:   "https://example.com/foo/?utm_source=feed&keep=1",
+			want: "https://example.com/foo?keep=1",
 		},
 		{
-			name: "removes known tracking parameters",
-			in:   "https://example.com/?id=42&fbclid=abc&utm_campaign=test&gclid=123",
-			want: "https://example.com/?id=42",
+			name: "removes trailing root slash with query",
+			in:   "https://www.example.com/?utm_source=feed&Keep=1",
+			want: "https://example.com?Keep=1",
+		},
+		{
+			name: "removes tracking parameters with varied casing",
+			in:   "https://example.com/path/?ID=42&Fbclid=abc&utm_campaign=test&GCLID=123",
+			want: "https://example.com/path?ID=42",
+		},
+		{
+			name: "collapses redundant path segments",
+			in:   "https://example.com/a/b/../c/?utm_medium=feed",
+			want: "https://example.com/a/c",
 		},
 		{
 			name: "invalid url returned unchanged",

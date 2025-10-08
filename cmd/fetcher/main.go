@@ -13,6 +13,7 @@ import (
 
 	"courier/internal/feed"
 	"courier/internal/item"
+	"courier/internal/item/urlcanon"
 	"courier/internal/logx"
 	"courier/internal/search"
 	"courier/internal/store"
@@ -219,6 +220,7 @@ func FetchFeed(ctx context.Context, repo feedStore, searchClient documentIndexer
 	var docs []search.Document
 	for _, entry := range res.Feed.Items {
 		params := item.FromFeedItem(f.ID, entry)
+		params.URL = urlcanon.Normalize(params.URL)
 		output, err := repo.UpsertItem(ctx, params)
 		if err != nil {
 			wrapped := fmt.Errorf("upsert item: %w", err)
