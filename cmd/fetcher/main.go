@@ -59,7 +59,8 @@ func main() {
 	cancel()
 
 	fetcher := feed.NewFetcher()
-	backoffs := newBackoffTracker()
+	rateLimitBackoffs := newBackoffTracker()
+	transientBackoffs := newBackoffTrackerWith(5*time.Second, 2*time.Minute)
 
 	logx.Info(svc, "ready", map[string]any{"every": every.String(), "batch_size": batchSize})
 
@@ -68,7 +69,7 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), every)
-		run(ctx, svc, repo, searchClient, fetcher, backoffs, batchSize)
+		run(ctx, svc, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, batchSize)
 		cancel()
 		<-ticker.C
 	}
@@ -92,7 +93,7 @@ type feedRepository interface {
 	ListFeeds(context.Context, bool) ([]store.Feed, error)
 }
 
-func run(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, batchSize int) {
+func run(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int) {
 	logx.Info(svc, "crawl tick", nil)
 
 	feeds, err := repo.ListFeeds(ctx, true)
@@ -104,7 +105,7 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 	pendingDocs := make([]search.Document, 0, batchSize)
 
 	for _, f := range feeds {
-		result := processFeed(ctx, svc, repo, searchClient, fetcher, backoffs, batchSize, &pendingDocs, f)
+		result := processFeed(ctx, svc, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, batchSize, &pendingDocs, f)
 
 		extra := map[string]any{
 			"feed":    f.URL,
@@ -165,7 +166,7 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 	}
 }
 
-func processFeed(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
+func processFeed(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
 	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 
 	newDocsRemaining := 0
@@ -216,7 +217,7 @@ func processFeed(ctx context.Context, svc string, repo feedRepository, searchCli
 		}
 	}()
 
-	docsResult, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
+	docsResult, docs := FetchFeed(ctx, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, f)
 	result = docsResult
 
 	if len(docs) > 0 {
@@ -297,15 +298,23 @@ type FetchFeedResult struct {
 
 var ErrBackoffActive = errors.New("backoff active")
 
-func FetchFeed(ctx context.Context, repo feedStore, _ documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, f store.Feed) (FetchFeedResult, []search.Document) {
+func FetchFeed(ctx context.Context, repo feedStore, _ documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, f store.Feed) (FetchFeedResult, []search.Document) {
 	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 
 	now := time.Now().UTC()
-	if wait := backoffs.Remaining(f.ID, now); wait > 0 {
+	if wait := transientBackoffs.Remaining(f.ID, now); wait > 0 {
 		result.Err = ErrBackoffActive
 		result.RetryIn = wait
 		result.Skipped = true
-		result.Reason = "backoff active"
+		result.Reason = "transient backoff active"
+		return result, nil
+	}
+
+	if wait := rateLimitBackoffs.Remaining(f.ID, now); wait > 0 {
+		result.Err = ErrBackoffActive
+		result.RetryIn = wait
+		result.Skipped = true
+		result.Reason = "rate limit backoff active"
 		return result, nil
 	}
 
@@ -322,17 +331,23 @@ func FetchFeed(ctx context.Context, repo feedStore, _ documentIndexer, fetcher f
 	result.Status = res.Status
 	if err != nil {
 		result.Err = err
-		if errors.Is(err, feed.ErrRetryLater) {
-			duration := backoffs.Schedule(f.ID, now, res.RetryAfter)
+		switch {
+		case errors.Is(err, feed.ErrTransientFetch):
+			duration := transientBackoffs.Schedule(f.ID, now, res.RetryAfter)
 			result.RetryIn = duration
-			result.Reason = "retry scheduled"
-		} else {
+			result.Reason = "transient retry scheduled"
+		case errors.Is(err, feed.ErrRetryLater):
+			duration := rateLimitBackoffs.Schedule(f.ID, now, res.RetryAfter)
+			result.RetryIn = duration
+			result.Reason = "rate limit retry scheduled"
+		default:
 			result.Reason = "fetch failed"
 		}
 		return result, nil
 	}
 
-	backoffs.Reset(f.ID)
+	rateLimitBackoffs.Reset(f.ID)
+	transientBackoffs.Reset(f.ID)
 
 	if res.Status == http.StatusNotModified {
 		result.Skipped = true
@@ -425,9 +440,13 @@ type backoffEntry struct {
 }
 
 func newBackoffTracker() *backoffTracker {
+	return newBackoffTrackerWith(30*time.Second, 10*time.Minute)
+}
+
+func newBackoffTrackerWith(min, max time.Duration) *backoffTracker {
 	return &backoffTracker{
-		min:    30 * time.Second,
-		max:    10 * time.Minute,
+		min:    min,
+		max:    max,
 		factor: 2.0,
 		items:  make(map[string]backoffEntry),
 	}
