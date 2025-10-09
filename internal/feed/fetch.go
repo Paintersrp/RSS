@@ -133,8 +133,18 @@ func isTransientFetchError(err error) bool {
 		return true
 	}
 
-	if errors.Is(err, syscall.ECONNRESET) {
-		return true
+	transientSyscalls := []error{
+		syscall.ECONNRESET,
+		syscall.ECONNREFUSED,
+		syscall.ECONNABORTED,
+		syscall.EPIPE,
+		syscall.EHOSTUNREACH,
+		syscall.ENETUNREACH,
+	}
+	for _, target := range transientSyscalls {
+		if errors.Is(err, target) {
+			return true
+		}
 	}
 
 	var netErr net.Error
