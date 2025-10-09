@@ -170,33 +170,42 @@ func processFeed(ctx context.Context, svc string, repo feedRepository, searchCli
 	result = FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 	initialPending := len(*pendingDocs)
 
-	defer func() {
-		if r := recover(); r != nil {
-			if len(*pendingDocs) > initialPending {
-				*pendingDocs = (*pendingDocs)[:initialPending]
-			}
-			panicValue := fmt.Sprintf("%v", r)
-			err := fmt.Errorf("panic: %s", panicValue)
-			logx.Error(svc, "feed panic", err, map[string]any{
-				"feed":        f.URL,
-				"feed_id":     f.ID,
-				"panic_value": panicValue,
-				"stack":       string(debug.Stack()),
-			})
+	defer recoverFeedPanic(svc, f, pendingDocs, initialPending, &result)
+
+	result = processFeedUnsafe(ctx, svc, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, batchSize, pendingDocs, f)
+	return result
+}
+
+func recoverFeedPanic(svc string, f store.Feed, pendingDocs *[]search.Document, initialPending int, result *FetchFeedResult) {
+	if r := recover(); r != nil {
+		if pendingDocs != nil && len(*pendingDocs) > initialPending {
+			*pendingDocs = (*pendingDocs)[:initialPending]
+		}
+
+		panicValue := fmt.Sprintf("%v", r)
+		panicType := fmt.Sprintf("%T", r)
+		panicErr := fmt.Errorf("panic: %s", panicValue)
+
+		logx.Error(svc, "feed panic", panicErr, map[string]any{
+			"feed":        f.URL,
+			"feed_id":     f.ID,
+			"panic_type":  panicType,
+			"panic_value": panicValue,
+			"stack":       string(debug.Stack()),
+		})
+
+		if result != nil {
 			if result.Err != nil {
-				result.Err = errors.Join(result.Err, err)
+				result.Err = errors.Join(result.Err, panicErr)
 			} else {
-				result.Err = err
+				result.Err = panicErr
 			}
 			result.Skipped = true
 			if result.Reason == "" {
 				result.Reason = "panic"
 			}
 		}
-	}()
-
-	result = processFeedUnsafe(ctx, svc, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, batchSize, pendingDocs, f)
-	return result
+	}
 }
 
 func processFeedUnsafe(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
