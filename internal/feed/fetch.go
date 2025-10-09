@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -46,6 +48,9 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 
 	resp, err := f.client.Do(req)
 	if err != nil {
+		if isTransientFetchError(err) {
+			return Result{}, fmt.Errorf("%w: %w", ErrTransientFetch, err)
+		}
 		return Result{}, err
 	}
 	defer resp.Body.Close()
@@ -95,7 +100,10 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	return res, nil
 }
 
-var ErrRetryLater = errors.New("retry later")
+var (
+	ErrRetryLater     = errors.New("retry later")
+	ErrTransientFetch = errors.New("transient fetch")
+)
 
 func IsRetryable(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
@@ -115,4 +123,29 @@ func parseRetryAfter(header string) time.Duration {
 		}
 	}
 	return 0
+}
+
+func isTransientFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	if errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+		if netErr.Temporary() {
+			return true
+		}
+	}
+
+	return false
 }

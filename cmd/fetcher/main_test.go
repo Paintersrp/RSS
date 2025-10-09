@@ -165,11 +165,12 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 			},
 		},
 	}}
-	backoffs := newBackoffTracker()
+	rateLimitBackoffs := newBackoffTracker()
+	transientBackoffs := newBackoffTracker()
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -199,7 +200,7 @@ func TestFetchFeedSkipsUpdateOnNotModified(t *testing.T) {
 	feedRecord.ETag = sql.NullString{Valid: true, String: etag}
 	feedRecord.LastModified = sql.NullString{Valid: true, String: lastModified}
 
-	second, moreDocs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, feedRecord)
+	second, moreDocs := FetchFeed(ctx, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, feedRecord)
 	if second.Status != http.StatusNotModified {
 		t.Fatalf("expected status 304, got %d", second.Status)
 	}
@@ -245,7 +246,7 @@ func TestFetchFeedCanonicalizesItemURLs(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), newBackoffTracker(), feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -289,7 +290,7 @@ func TestFetchFeedSanitizesContentText(t *testing.T) {
 	ctx := context.Background()
 	feedRecord := store.Feed{ID: "feed-1", URL: "http://example.com/feed"}
 
-	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), feedRecord)
+	result, docs := FetchFeed(ctx, repo, searchClient, fetcher, newBackoffTracker(), newBackoffTracker(), feedRecord)
 	if result.Status != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", result.Status)
 	}
@@ -360,7 +361,7 @@ func TestRunIndexesOnlyChangedItems(t *testing.T) {
 			}}}
 
 			ctx := context.Background()
-			run(ctx, "fetcher", repo, searchClient, fetcher, newBackoffTracker(), 10)
+			run(ctx, "fetcher", repo, searchClient, fetcher, newBackoffTracker(), newBackoffTracker(), 10)
 
 			if len(repo.upserts) != 1 {
 				t.Fatalf("expected one item upsert, got %d", len(repo.upserts))
@@ -424,7 +425,7 @@ func TestRunFallsBackToSingleDocumentUpserts(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), 10)
+		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), newBackoffTracker(), 10)
 
 		if len(searchClient.batchCalls) != 1 {
 			t.Fatalf("expected one batch attempt, got %d", len(searchClient.batchCalls))
@@ -456,7 +457,7 @@ func TestRunFallsBackToSingleDocumentUpserts(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), 10)
+		run(ctx, "fetcher", repo, searchClient, makeFetcher(), newBackoffTracker(), newBackoffTracker(), 10)
 
 		if len(searchClient.batchCalls) != 2 {
 			t.Fatalf("expected two batch attempts, got %d", len(searchClient.batchCalls))
