@@ -166,7 +166,39 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 	}
 }
 
-func processFeed(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
+func processFeed(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) (result FetchFeedResult) {
+	result = FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
+	initialPending := len(*pendingDocs)
+
+	defer func() {
+		if r := recover(); r != nil {
+			if len(*pendingDocs) > initialPending {
+				*pendingDocs = (*pendingDocs)[:initialPending]
+			}
+			panicValue := fmt.Sprintf("%v", r)
+			err := fmt.Errorf("panic: %s", panicValue)
+			logx.Error(svc, "feed panic", err, map[string]any{
+				"feed":        f.URL,
+				"feed_id":     f.ID,
+				"panic_value": panicValue,
+				"stack":       string(debug.Stack()),
+			})
+			if result.Err != nil {
+				result.Err = errors.Join(result.Err, err)
+			} else {
+				result.Err = err
+			}
+			if result.Reason == "" {
+				result.Reason = "panic"
+			}
+		}
+	}()
+
+	result = processFeedUnsafe(ctx, svc, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, batchSize, pendingDocs, f)
+	return result
+}
+
+func processFeedUnsafe(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, rateLimitBackoffs, transientBackoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
 	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
 
 	newDocsRemaining := 0
@@ -188,36 +220,6 @@ func processFeed(ctx context.Context, svc string, repo feedRepository, searchCli
 		}
 		*pendingDocs = pd[n:]
 	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			if newDocsRemaining > 0 {
-				pd := *pendingDocs
-				if len(pd) >= newDocsRemaining {
-					*pendingDocs = pd[:len(pd)-newDocsRemaining]
-				} else {
-					*pendingDocs = nil
-				}
-				newDocsRemaining = 0
-			}
-			panicValue := fmt.Sprintf("%v", r)
-			err := fmt.Errorf("panic: %s", panicValue)
-			logx.Error(svc, "feed panic", err, map[string]any{
-				"feed":        f.URL,
-				"feed_id":     f.ID,
-				"panic_value": panicValue,
-				"stack":       string(debug.Stack()),
-			})
-			if result.Err != nil {
-				result.Err = errors.Join(result.Err, err)
-			} else {
-				result.Err = err
-			}
-			if result.Reason == "" {
-				result.Reason = "panic"
-			}
-		}
-	}()
 
 	docsResult, docs := FetchFeed(ctx, repo, searchClient, fetcher, rateLimitBackoffs, transientBackoffs, f)
 	result = docsResult

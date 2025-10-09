@@ -74,6 +74,10 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusRequestTimeout {
+			return res, fmt.Errorf("%w: http status %d", ErrTransientFetch, resp.StatusCode)
+		}
+
 		if IsRetryable(resp.StatusCode) {
 			res.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 			return res, ErrRetryLater
