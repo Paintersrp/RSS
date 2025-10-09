@@ -200,6 +200,9 @@ func recoverFeedPanic(svc string, f store.Feed, pendingDocs *[]search.Document, 
 			} else {
 				result.Err = panicErr
 			}
+			if result.Status == 0 {
+				result.Status = http.StatusInternalServerError
+			}
 			result.Skipped = true
 			if result.Reason == "" {
 				result.Reason = "panic"
