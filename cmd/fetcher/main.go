@@ -104,86 +104,7 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 	pendingDocs := make([]search.Document, 0, batchSize)
 
 	for _, f := range feeds {
-		result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
-		func() {
-			newDocsRemaining := 0
-			removeFront := func(n int) {
-				if n <= 0 {
-					return
-				}
-				if n > len(pendingDocs) {
-					n = len(pendingDocs)
-				}
-				start := len(pendingDocs) - newDocsRemaining
-				if n > start {
-					removedNew := n - start
-					if removedNew > newDocsRemaining {
-						removedNew = newDocsRemaining
-					}
-					newDocsRemaining -= removedNew
-				}
-				pendingDocs = pendingDocs[n:]
-			}
-			defer func() {
-				if r := recover(); r != nil {
-					if newDocsRemaining > 0 && len(pendingDocs) >= newDocsRemaining {
-						pendingDocs = pendingDocs[:len(pendingDocs)-newDocsRemaining]
-					}
-					err := fmt.Errorf("panic: %v", r)
-					logx.Error(svc, "feed panic", err, map[string]any{
-						"feed":    f.URL,
-						"feed_id": f.ID,
-						"stack":   string(debug.Stack()),
-					})
-					if result.Err != nil {
-						result.Err = errors.Join(result.Err, err)
-					} else {
-						result.Err = err
-					}
-					result.Reason = "panic"
-				}
-			}()
-
-			docsResult, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
-			result = docsResult
-
-			if len(docs) > 0 {
-				pendingDocs = append(pendingDocs, docs...)
-				newDocsRemaining += len(docs)
-			}
-
-			if len(pendingDocs) >= batchSize {
-				for len(pendingDocs) >= batchSize {
-					chunk := pendingDocs[:batchSize]
-					logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
-					if err := searchClient.UpsertBatch(ctx, chunk); err != nil {
-						logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(chunk)})
-						indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, chunk)
-						removeFront(indexed)
-						if fallbackErr != nil {
-							if len(pendingDocs) > 0 {
-								skipped := pendingDocs[0]
-								logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"document_id": skipped.ID})
-								removeFront(1)
-							} else {
-								logx.Error(svc, "fallback search upsert", fallbackErr, nil)
-							}
-							if result.Err != nil {
-								result.Err = errors.Join(result.Err, err, fallbackErr)
-							} else {
-								result.Err = errors.Join(err, fallbackErr)
-							}
-							if result.Reason == "" {
-								result.Reason = "search upsert"
-							}
-							continue
-						}
-						continue
-					}
-					removeFront(batchSize)
-				}
-			}
-		}()
+		result := processFeed(ctx, svc, repo, searchClient, fetcher, backoffs, batchSize, &pendingDocs, f)
 
 		extra := map[string]any{
 			"feed":    f.URL,
@@ -242,6 +163,101 @@ func run(ctx context.Context, svc string, repo feedRepository, searchClient docu
 		}
 		pendingDocs = pendingDocs[chunkSize:]
 	}
+}
+
+func processFeed(ctx context.Context, svc string, repo feedRepository, searchClient documentIndexer, fetcher feedFetcher, backoffs *backoffTracker, batchSize int, pendingDocs *[]search.Document, f store.Feed) FetchFeedResult {
+	result := FetchFeedResult{FeedID: f.ID, FeedURL: f.URL}
+
+	newDocsRemaining := 0
+	removeFront := func(n int) {
+		if n <= 0 {
+			return
+		}
+		pd := *pendingDocs
+		if n > len(pd) {
+			n = len(pd)
+		}
+		start := len(pd) - newDocsRemaining
+		if n > start {
+			removedNew := n - start
+			if removedNew > newDocsRemaining {
+				removedNew = newDocsRemaining
+			}
+			newDocsRemaining -= removedNew
+		}
+		*pendingDocs = pd[n:]
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			if newDocsRemaining > 0 {
+				pd := *pendingDocs
+				if len(pd) >= newDocsRemaining {
+					*pendingDocs = pd[:len(pd)-newDocsRemaining]
+				} else {
+					*pendingDocs = nil
+				}
+				newDocsRemaining = 0
+			}
+			err := fmt.Errorf("panic: %v", r)
+			logx.Error(svc, "feed panic", err, map[string]any{
+				"feed":    f.URL,
+				"feed_id": f.ID,
+				"stack":   string(debug.Stack()),
+			})
+			if result.Err != nil {
+				result.Err = errors.Join(result.Err, err)
+			} else {
+				result.Err = err
+			}
+			if result.Reason == "" {
+				result.Reason = "panic"
+			}
+		}
+	}()
+
+	docsResult, docs := FetchFeed(ctx, repo, searchClient, fetcher, backoffs, f)
+	result = docsResult
+
+	if len(docs) > 0 {
+		*pendingDocs = append(*pendingDocs, docs...)
+		newDocsRemaining += len(docs)
+	}
+
+	if len(*pendingDocs) >= batchSize {
+		for len(*pendingDocs) >= batchSize {
+			chunk := (*pendingDocs)[:batchSize]
+			logx.Info(svc, "flush search batch", map[string]any{"batch_size": len(chunk)})
+			if err := searchClient.UpsertBatch(ctx, chunk); err != nil {
+				logx.Error(svc, "flush search batch", err, map[string]any{"batch_size": len(chunk)})
+				indexed, fallbackErr := upsertDocumentsIndividually(ctx, searchClient, chunk)
+				removeFront(indexed)
+				if fallbackErr != nil {
+					pd := *pendingDocs
+					if len(pd) > 0 {
+						skipped := pd[0]
+						logx.Error(svc, "fallback search upsert", fallbackErr, map[string]any{"document_id": skipped.ID})
+						removeFront(1)
+					} else {
+						logx.Error(svc, "fallback search upsert", fallbackErr, nil)
+					}
+					if result.Err != nil {
+						result.Err = errors.Join(result.Err, err, fallbackErr)
+					} else {
+						result.Err = errors.Join(err, fallbackErr)
+					}
+					if result.Reason == "" {
+						result.Reason = "search upsert"
+					}
+					continue
+				}
+				continue
+			}
+			removeFront(batchSize)
+		}
+	}
+
+	return result
 }
 
 func upsertDocumentsIndividually(ctx context.Context, indexer documentIndexer, docs []search.Document) (int, error) {
