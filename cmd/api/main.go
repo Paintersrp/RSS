@@ -58,6 +58,9 @@ func main() {
 	})
 	srv.HTTPErrorHandler = httpx.HTTPErrorHandler(svc)
 	httpx.RegisterConfigRoute(srv, runtimeCfg)
+	if runtimeCfg.Expose {
+		logx.Info(svc, "config route enabled", map[string]any{"path": "/config"})
+	}
 
 	addr := runtimeCfg.HTTP.Addr
 
