@@ -81,7 +81,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 
 		if isRateLimited(resp.StatusCode) {
 			res.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-			return res, ErrRetryLater
+			return res, fmt.Errorf("%w: http status %d", ErrRetryLater, resp.StatusCode)
 		}
 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
