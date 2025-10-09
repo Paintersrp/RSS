@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -20,42 +19,47 @@ import (
 
 func main() {
 	svc := "api"
-	dsn := requireEnv(svc, "COURIER_DSN")
-	meiliURL := requireEnv(svc, "MEILI_URL")
+
+	runtimeCfg, err := httpx.LoadRuntimeConfig(svc)
+	if err != nil {
+		fatal(svc, "load config", err, nil)
+	}
+	svc = runtimeCfg.Service
 
 	metrics := httpx.NewMetrics(svc)
 
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open(runtimeCfg.Database.Driver, runtimeCfg.Database.DSN)
 	if err != nil {
 		fatal(svc, "open db", err, nil)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(10)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetMaxOpenConns(runtimeCfg.Database.MaxOpenConns)
+	db.SetMaxIdleConns(runtimeCfg.Database.MaxIdleConns)
+	db.SetConnMaxLifetime(runtimeCfg.Database.ConnMaxLifetime)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeCfg.Database.PingTimeout)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		fatal(svc, "ping db", err, nil)
 	}
 
-	searchClient := search.New(meiliURL, metrics)
+	searchClient := search.New(runtimeCfg.Search.URL, metrics)
 	if err := searchClient.EnsureIndex(ctx); err != nil {
 		fatal(svc, "ensure index", err, nil)
 	}
 
 	store := store.New(db, metrics)
-        srv := httpx.NewServer(httpx.Config{
-                Store:   store,
-                Search:  searchClient,
-                DB:      db,
-                Service: svc,
-                Metrics: metrics,
-        })
-        srv.HTTPErrorHandler = httpx.HTTPErrorHandler(svc)
+	srv := httpx.NewServer(httpx.Config{
+		Store:   store,
+		Search:  searchClient,
+		DB:      db,
+		Service: svc,
+		Metrics: metrics,
+	})
+	srv.HTTPErrorHandler = httpx.HTTPErrorHandler(svc)
+	httpx.RegisterConfigRoute(srv, runtimeCfg)
 
-	const addr = ":8080"
+	addr := runtimeCfg.HTTP.Addr
 
 	serverErrCh := make(chan error, 1)
 	go func() {
@@ -76,7 +80,7 @@ func main() {
 		fatal(svc, "server", err, map[string]any{"addr": addr})
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), runtimeCfg.HTTP.ShutdownTimeout)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logx.Error(svc, "shutdown", err, nil)
@@ -93,12 +97,4 @@ func main() {
 func fatal(service, msg string, err error, extra map[string]any) {
 	logx.Error(service, msg, err, extra)
 	os.Exit(1)
-}
-
-func requireEnv(service, key string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		fatal(service, "missing required env var", errors.New(key+" is required"), map[string]any{"env": key})
-	}
-	return value
 }
