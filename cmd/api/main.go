@@ -46,13 +46,14 @@ func main() {
 	}
 
 	store := store.New(db, metrics)
-	srv := httpx.NewServer(httpx.Config{
-		Store:   store,
-		Search:  searchClient,
-		DB:      db,
-		Service: svc,
-		Metrics: metrics,
-	})
+        srv := httpx.NewServer(httpx.Config{
+                Store:   store,
+                Search:  searchClient,
+                DB:      db,
+                Service: svc,
+                Metrics: metrics,
+        })
+        srv.HTTPErrorHandler = httpx.HTTPErrorHandler(svc)
 
 	const addr = ":8080"
 

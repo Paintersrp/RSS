@@ -3,7 +3,6 @@ package httpx
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +39,7 @@ func NewServer(cfg Config) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
+	e.HTTPErrorHandler = HTTPErrorHandler(cfg.Service)
 
 	e.Use(middleware.Recover())
 	e.Use(requestLogger(cfg.Service))
@@ -92,9 +92,6 @@ func NewServer(cfg Config) *echo.Echo {
 		ctx := c.Request().Context()
 		feed, err := cfg.Store.InsertFeed(ctx, req.URL)
 		if err != nil {
-			if errors.Is(err, store.ErrFeedExists) {
-				return echo.NewHTTPError(http.StatusConflict, "feed exists")
-			}
 			return err
 		}
 		return c.JSON(http.StatusCreated, mapFeed(feed))
