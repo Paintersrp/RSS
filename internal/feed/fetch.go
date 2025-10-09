@@ -110,6 +110,18 @@ var (
 	ErrTransientFetch = errors.New("transient fetch")
 )
 
+var transientSyscallErrors = []error{
+	syscall.ECONNRESET,
+	syscall.ECONNREFUSED,
+	syscall.ECONNABORTED,
+	syscall.EPIPE,
+	syscall.EHOSTUNREACH,
+	syscall.ENETUNREACH,
+	syscall.ENETDOWN,
+	syscall.ENETRESET,
+	syscall.ETIMEDOUT,
+}
+
 func isRateLimited(status int) bool {
 	return status == http.StatusTooManyRequests
 }
@@ -151,15 +163,7 @@ func isTransientFetchError(err error) bool {
 		return true
 	}
 
-	transientSyscalls := []error{
-		syscall.ECONNRESET,
-		syscall.ECONNREFUSED,
-		syscall.ECONNABORTED,
-		syscall.EPIPE,
-		syscall.EHOSTUNREACH,
-		syscall.ENETUNREACH,
-	}
-	for _, target := range transientSyscalls {
+	for _, target := range transientSyscallErrors {
 		if errors.Is(err, target) {
 			return true
 		}
@@ -173,6 +177,10 @@ func isTransientFetchError(err error) bool {
 		if netErr.Temporary() {
 			return true
 		}
+	}
+
+	if errors.Is(err, net.ErrClosed) {
+		return true
 	}
 
 	return false
