@@ -225,5 +225,15 @@ func sanitizeDSN(dsn string) string {
 			parsed.User = url.User("")
 		}
 	}
+	if parsed.RawQuery != "" {
+		q := parsed.Query()
+		for key := range q {
+			switch strings.ToLower(key) {
+			case "password", "pass", "pwd", "password_file":
+				delete(q, key)
+			}
+		}
+		parsed.RawQuery = q.Encode()
+	}
 	return parsed.String()
 }
