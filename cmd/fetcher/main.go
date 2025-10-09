@@ -200,11 +200,13 @@ func processFeed(ctx context.Context, svc string, repo feedRepository, searchCli
 				}
 				newDocsRemaining = 0
 			}
-			err := fmt.Errorf("panic: %v", r)
+			panicValue := fmt.Sprintf("%v", r)
+			err := fmt.Errorf("panic: %s", panicValue)
 			logx.Error(svc, "feed panic", err, map[string]any{
-				"feed":    f.URL,
-				"feed_id": f.ID,
-				"stack":   string(debug.Stack()),
+				"feed":        f.URL,
+				"feed_id":     f.ID,
+				"panic_value": panicValue,
+				"stack":       string(debug.Stack()),
 			})
 			if result.Err != nil {
 				result.Err = errors.Join(result.Err, err)
