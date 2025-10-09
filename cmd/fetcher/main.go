@@ -188,6 +188,7 @@ func processFeed(ctx context.Context, svc string, repo feedRepository, searchCli
 			} else {
 				result.Err = err
 			}
+			result.Skipped = true
 			if result.Reason == "" {
 				result.Reason = "panic"
 			}

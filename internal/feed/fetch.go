@@ -74,11 +74,12 @@ func (f *Fetcher) Fetch(ctx context.Context, url, etag, lastModified string) (Re
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusRequestTimeout {
+		if isTransientStatus(resp.StatusCode) {
+			res.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 			return res, fmt.Errorf("%w: http status %d", ErrTransientFetch, resp.StatusCode)
 		}
 
-		if IsRetryable(resp.StatusCode) {
+		if isRateLimited(resp.StatusCode) {
 			res.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 			return res, ErrRetryLater
 		}
@@ -109,8 +110,21 @@ var (
 	ErrTransientFetch = errors.New("transient fetch")
 )
 
-func IsRetryable(status int) bool {
-	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
+func isRateLimited(status int) bool {
+	return status == http.StatusTooManyRequests
+}
+
+func isTransientStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseRetryAfter(header string) time.Duration {
